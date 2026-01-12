@@ -1,7 +1,8 @@
 # dataset_dir: 'data/dataset_Bern_v2'
 # dataset_dir: 'data/dataset_Longxi_small'
 # dataset_dir: 'data/dataset_Longxi'
-dataset_dir: 'data/dataset_Longxi_Bern_v2'
+# dataset_dir: 'data/dataset_Longxi_Bern_v2'
+dataset_dir: 'data/test_dem/dataset_with_dem'
 trainset_dir: 'data/splitset_Bern_v2_training'
 valset_dir: 'data/splitset_Bern_v2_validation'
 mode: auto # choose auto for dataset or split for training and validation sets

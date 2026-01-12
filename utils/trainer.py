@@ -20,11 +20,16 @@ logger = logging.get_logger(__name__)
 
 
 def collate_with_filename(batch):
+    # print(batch.dtype)
     # Normal collate for tensor fields
     batch_collated = default_collate([{k: v for k, v in sample.items() if k != "filename"} 
                                       for sample in batch])
 
     # Keep filenames as a simple list
+    print(batch_collated.keys())
+    print('---')
+    for sample in batch:
+        print(sample.keys())
     batch_collated["filename"] = [sample["filename"] for sample in batch]
 
     return batch_collated
@@ -236,17 +241,21 @@ class TrainValMetricsTrainer(Trainer):
 
             # Prediction step
             #   remove filename from the inputs before giving it to the model
-            filenames = inputs['filename']
-            inputs = {k:v for k,v in inputs.items() if k != 'filename'}
+            filename_in = 'filename' in inputs.keys()
+            if filename_in: 
+
+                filenames = inputs['filename']
+                inputs = {k:v for k,v in inputs.items() if k != 'filename'}
             losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
 
             #   split batches to add each sample
-            preds = self.logits_to_preds(logits)
-            for sample_id in range(preds.shape[0]):
-                self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
-            labels_cpu = labels.cpu().detach().clone()
-            dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
-            self.confmat += compute_cm_from_dict(dict_conf_mat)
+            if filename_in:
+                preds = self.logits_to_preds(logits)
+                for sample_id in range(preds.shape[0]):
+                    self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
+                labels_cpu = labels.cpu().detach().clone()
+                dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
+                self.confmat += compute_cm_from_dict(dict_conf_mat)
                 
             # -----------------------------
             # -----------------------------

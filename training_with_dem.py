@@ -1,0 +1,300 @@
+import os
+import json
+import torch
+import torch.nn as nn
+from torch.utils.data import Subset, random_split
+from transformers import (
+    AutoImageProcessor,
+    SegformerForSemanticSegmentation,
+    TrainingArguments,
+)
+import albumentations as A
+import numpy as np
+
+import pandas as pd
+from time import time
+from datetime import datetime
+from omegaconf import OmegaConf
+
+from utils.dataset_with_dem import SegmentationDataset
+from utils.trainer import TrainValMetricsTrainer, collate_with_filename
+from utils.metrics import compute_metrics
+from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback
+from utils.visualization import show_iou_per_class, show_loss_pa, show_mean_iou_dice, show_confusion_matrix
+
+# If batch size too big, fails instead of slowing down
+torch.cuda.set_per_process_memory_fraction(0.95)
+
+def get_best_checkpoint(training_dir):
+    print(training_dir)
+    print(os.listdir(training_dir))
+    lst_checkpoints = [x for x in os.listdir(training_dir) if 'checkpoint' in x and os.path.isdir(os.path.join(training_dir, x))]
+    print(lst_checkpoints)
+
+    lst_steps = [int(x.split('-')[-1]) for x in lst_checkpoints]
+    best_step = np.max(lst_steps)
+    best_checkpoint = [x for x in lst_checkpoints if str(best_step) in x][0]
+
+    return os.path.join(training_dir, best_checkpoint)
+
+
+def training_model(args):
+    OUTPUT_DIR = rf"{args.train.output_dir}"
+    OUTPUT_SUFFIXE = args.train.output_suffixe
+    VAL_SPLIT = args.train.val_split
+    NUM_EPOCHS = args.train.num_epochs
+    NUM_WORKERS = args.train.num_workers
+    BATCH_SIZE = args.train.batch_size
+    LEARNING_RATE = args.train.learning_rate
+    WEIGHT_DECAY = args.train.weight_decay
+    PRETRAINED_MODEL = args.train.pretrained_model
+    DATASET_DIR = args.dataset.dataset_dir
+    TRAINING_SET_DIR = args.dataset.trainset_dir
+    VALIDATION_SET_DIR = args.dataset.valset_dir
+    DATASET_MODE = args.dataset.mode
+
+    FROM_PRETRAIN = args.train.from_pretrain
+    PRETRAIN_DIR = args.train.pretrain_dir
+
+    RESUME_FROM_EXISTING = args.train.resume_from_existing
+    EXISTING_DIR_TO_RESUME_FROM = args.train.existing_dir if RESUME_FROM_EXISTING else None
+
+    try:
+        assert FROM_PRETRAIN + RESUME_FROM_EXISTING < 2
+    except:
+        raise AttributeError("PARAMETERS 'train.from_pretrain' and 'train.resume_from_existing' can not be both set to True!!!")
+
+    DO_DATA_AUGMENTATION = args.train.do_data_augmentation
+    
+    # Create architecture
+    RESULTS_DIR = os.path.join(OUTPUT_DIR, datetime.now().strftime(r"%Y%m%d_%H%M%S_") + f"{NUM_EPOCHS}_epochs_" + OUTPUT_SUFFIXE)
+    LOG_DIR = os.path.join(RESULTS_DIR, 'logs')
+    CONFMAT_DIR = os.path.join(LOG_DIR, "confmats")
+    BESTPREDS_DIR = os.path.join(LOG_DIR, "best_preds")
+    IMG_DIR = os.path.join(RESULTS_DIR, 'images')
+    LAST_CHECKPOINT_DIR = os.path.join(RESULTS_DIR, 'last_checkpoint')
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(IMG_DIR, exist_ok=True)
+    os.makedirs(CONFMAT_DIR, exist_ok=True)
+
+    # save config
+    with open(os.path.join(RESULTS_DIR, 'config.json'), 'w') as f:
+        OmegaConf.save(args, f)
+
+    time_start = time()
+
+    # Load model + processor
+    if FROM_PRETRAIN:
+        PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
+    processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
+    model = SegformerForSemanticSegmentation.from_pretrained(
+        PRETRAINED_MODEL,
+        num_labels=2,
+        ignore_mismatched_sizes=True  # <- Important for custom classes
+    )
+
+    # Get original conv
+    old_conv = model.segformer.encoder.patch_embeddings[0].proj
+
+    # Create new conv with 4 input channels
+    new_conv = nn.Conv2d(
+        in_channels=4,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=old_conv.bias is not None
+    )
+
+    # Initialize weights
+    with torch.no_grad():
+        # Copy RGB weights
+        new_conv.weight[:, :3, :, :] = old_conv.weight
+
+        # Initialize DEM channel (3 options)
+        # new_conv.weight[:, 3:4, :, :] = old_conv.weight.mean(dim=1, keepdim=True)
+        # OR zeros:
+        # new_conv.weight[:, 3:4, :, :] = 0
+        # OR random init:
+        nn.init.kaiming_normal_(new_conv.weight[:, 3:4, :, :])
+
+    # Replace layer
+    model.segformer.encoder.patch_embeddings[0].proj = new_conv
+
+    # Defining a transform for data augmentation
+    train_transform = A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+    ])
+
+    if DATASET_MODE == 'auto':
+        full_dataset_train = SegmentationDataset(
+            image_dir=os.path.join(DATASET_DIR, "images"),
+            mask_dir=os.path.join(DATASET_DIR, "masks"),
+            dem_dir=os.path.join(DATASET_DIR, "dem"),
+            processor=processor,
+            transform=None
+        )
+
+        full_dataset_val = SegmentationDataset(
+            image_dir=os.path.join(DATASET_DIR, "images"),
+            mask_dir=os.path.join(DATASET_DIR, "masks"),
+            dem_dir=os.path.join(DATASET_DIR, "dem"),
+            processor=processor,
+            transform=None
+        )
+
+        split_idx = int(len(full_dataset_train) * (1 - VAL_SPLIT))
+
+        train_indices, val_indices = random_split(
+            range(len(full_dataset_train)),
+            [split_idx, len(full_dataset_train) - split_idx],
+            generator=torch.Generator().manual_seed(42)
+        )
+
+        train_subset = Subset(full_dataset_train, train_indices.indices)
+        val_subset   = Subset(full_dataset_val, val_indices.indices)
+    elif DATASET_MODE == 'split':
+        train_subset = SegmentationDataset(
+            image_dir=os.path.join(TRAINING_SET_DIR, "images"),
+            mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
+            processor=processor,
+            transform=None
+        )
+        val_subset = SegmentationDataset(
+            image_dir=os.path.join(VALIDATION_SET_DIR, "images"),
+            mask_dir=os.path.join(VALIDATION_SET_DIR, "masks"),
+            processor=processor,
+            transform=None
+        )
+    else:
+        raise AttributeError("DATASET MODE NOT CORRECT in dataset.yaml")
+
+    if DO_DATA_AUGMENTATION:
+        if isinstance(train_subset, Subset):
+            train_subset.dataset.transform = train_transform
+        else:
+            train_subset.transform = train_transform
+
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=RESULTS_DIR,  # Where checkpoints and logs are saved
+        num_train_epochs=NUM_EPOCHS,        # Total number of epochs
+        per_device_train_batch_size=BATCH_SIZE,      # Adjust according to your GPU memory
+        per_device_eval_batch_size=BATCH_SIZE,
+        learning_rate=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,                  # Regularization
+
+        # Logging
+        logging_dir=LOG_DIR,                # TensorBoard logs
+        logging_strategy="steps",           # Log every N steps
+        logging_steps=len(train_subset),    # Adjust for dataset size
+        log_level="info",
+
+        # Checkpoints
+        save_strategy="epoch",              # Save checkpoint at the end of each epoch
+        save_total_limit=3,                 # Keep last 3 checkpoints
+        save_steps=None,                    # Not used when saving by epoch
+
+        # Evaluation
+        eval_strategy="epoch",              # Evaluate at the end of each epoch
+        load_best_model_at_end=True,        # Load checkpoint with best metric
+        metric_for_best_model="loss",       # Adjust if using other metrics
+
+        # Others
+        fp16=True,                          # Mixed precision (if GPU supports)
+        gradient_accumulation_steps=1,      # Increase effective batch size if needed
+        dataloader_num_workers=NUM_WORKERS,           # Adjust according to CPU cores
+        disable_tqdm=False
+    )
+
+    trainer = TrainValMetricsTrainer(
+        confmat_dir=CONFMAT_DIR,
+        model=model,
+        args=training_args,
+        # data_collator=collate_with_filename,
+        train_dataset=train_subset,
+        eval_dataset= val_subset,
+        processing_class=processor,
+        compute_metrics=compute_metrics,
+    )
+
+    trainer.add_callback(MetricsCallback(trainer=trainer, cf_dir=CONFMAT_DIR))
+    # trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
+    trainer.add_callback(SavesCurrentStateCallback(trainer=trainer, last_checkpoint_dir=LAST_CHECKPOINT_DIR))
+
+    # Train
+    trainer.train(resume_from_checkpoint=EXISTING_DIR_TO_RESUME_FROM)
+
+    # Save final model
+    trainer.save_model(os.path.join(RESULTS_DIR, "segformer_trained_model"))
+    processor.save_pretrained(os.path.join(RESULTS_DIR, "segformer_trained_model"))
+
+    # Visualization
+    state_file = os.path.join(LAST_CHECKPOINT_DIR, "trainer_state.json")
+    
+    with open(state_file, "r") as f:
+        state = json.load(f)
+    history = state["log_history"]
+
+    show_loss_pa(history,os.path.join(IMG_DIR, 'loss_pa.png'), False, True)
+    show_mean_iou_dice(history,os.path.join(IMG_DIR, 'mean_iou_dice.png'), False, True)
+    show_iou_per_class(history,os.path.join(IMG_DIR, 'iou_per_class.png'), False, True)
+
+    # Save best results
+    best_step = trainer.state.best_global_step
+    best_results = [x for x in history if x['step'] == best_step]
+    assert len(best_results) == 2
+    dict_best_results = best_results[0]
+    for key, val in best_results[1].items():
+        if key not in ["epoch", "step"]:
+            dict_best_results[key] = val
+    with open(os.path.join(RESULTS_DIR, 'best_results.json'), 'w') as f:
+        json.dump(dict_best_results, f, indent=2)
+
+    # Save best confidence matrix
+    src_best_cm = os.path.join(CONFMAT_DIR, 'values', f"confusion_matrix_ep_{int(dict_best_results['epoch']-1)}.csv")
+    if os.path.exists(src_best_cm):
+        conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
+        sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
+        sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
+        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
+        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
+        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
+    else:
+        print("CONFMAT NOT CREATED FOR BEST EPOCH")
+        print("following does not exist:") 
+        print(src_best_cm)
+
+    # Show duration of process
+    delta_time_loop = time() - time_start
+    hours = int(delta_time_loop // 3600)
+    min = int((delta_time_loop - 3600 * hours) // 60)
+    sec = int(delta_time_loop - 3600 * hours - 60 * min)
+    print(f"---\n\n==== Training completed in {hours}:{min}:{sec} ====\n")
+
+
+if __name__ == "__main__":
+    conf_train = OmegaConf.load('./config/training.yaml')
+    conf_dataset = OmegaConf.load('./config/dataset.yaml')
+
+    args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+
+    training_model(args)
+
+    # from PIL import Image
+    # import shutil
+    # src_img = r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test_dem\dataset_with_dem\images"
+    # src_dem = r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test_dem\dataset_with_dem\dem"
+    # src_dem_samp = r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test_dem\wabern_sattle_area.tif"
+
+    # dem_samp = np.array(Image.open(src_dem_samp), dtype=np.float32)
+    # dem_samp = dem_samp[:512, :512]
+    # print(dem_samp.shape)
+
+    # for img in os.listdir(src_img):
+    #     Image.fromarray(dem_samp).save(os.path.join(src_dem, img))
+
