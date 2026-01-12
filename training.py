@@ -247,7 +247,7 @@ def training_model(args):
 
 if __name__ == "__main__":
 
-    conf_train = OmegaConf.load('./config/train.yaml')
+    conf_train = OmegaConf.load('./config/training.yaml')
     conf_dataset = OmegaConf.load('./config/dataset.yaml')
 
     args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})

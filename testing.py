@@ -190,6 +190,6 @@ def run_testing(conf):
 
 
 if __name__ == "__main__":
-    conf = OmegaConf.load('config/test.yaml')
+    conf = OmegaConf.load('config/testing.yaml')
 
     run_testing(conf)

@@ -1,7 +1,7 @@
 downloader:
-  destination: data/test_production
-  dest_not_empty: add # choose between 'add', 'stop', 'replace'
-  skip_auto_download: False
+  destination: data/test_production/originals
+  dest_not_empty: replace # choose between 'add', 'stop', 'replace'
+  skip_auto_download: True
   mode: area  # can be chosen between 'full', 'region' and 'area'
   canton: "Genève"  # which canton is chosen if the mode is 'canton'
   # canton need to be chosen between:
@@ -11,18 +11,19 @@ downloader:
   #  'Zug' 'Basel-Landschaft' 'St. Gallen' 'Schaffhausen' 'Bern' 'Basel-Stadt'
   #  'Neuchâtel' 'Appenzell Innerrhoden']
   area: # which delimitation if the mode is 'area'
-    Emin: 2508
-    Emax: 2512
-    Nmin: 1125
-    Nmax: 1135
+    Emin: 2580
+    Emax: 2589
+    Nmin: 1160
+    Nmax: 1169
 predictions:
   model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   threshold_preds: 0.5
   threshold_grouping: 0.5
   tile_size: 512
   stride: 256
-  # resolutions: [1.0, 0.75, 0.5, 0.25, 0.1]
-  resolutions: [0.5, 0.25, 0.1]
+  resolutions: [1.0, 0.75, 0.5, 0.25, 0.1]
+  # resolutions: [0.5, 0.25, 0.1]
+  do_rm_intermed_files: False
 vectorization:
   dbscan_eps: 3
   dbscan_min_samples: 20

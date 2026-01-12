@@ -1,20 +1,12 @@
 import os
 import sys
-import json
 import numpy as np
-import pandas as pd
-import geopandas as gpd
-from tqdm import tqdm
 from PIL import Image
 import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib.cm as cm
 import torch
-from sklearn.cluster import DBSCAN
 import rasterio
-from rasterio.features import shapes
-from shapely.geometry import shape
 import requests
-from omegaconf import OmegaConf
 import datetime
 
 if __name__ == "__main__":
@@ -32,12 +24,11 @@ def geo_transfert(img_geo, img_target, same_file=True):
     with rasterio.open(img_geo) as src:
         crs = src.crs
         transform = src.transform
-        profile = src.profile
 
     with rasterio.open(img_target) as pred:
         pred_data = pred.read()
         pred_profile = pred.profile
-
+        
     pred_profile.update({
         "crs": crs,
         "transform": transform
@@ -72,7 +63,7 @@ def mirror_pad_image(img, tile_size, stride):
     return padded, (pad_h, pad_w), (H, W)
 
 
-def load_latest_checkpoint(model_dir):
+def load_latest_checkpoint(model_dir, verbose=False):
     """
     Returns the path to the latest checkpoint folder inside model_dir.
     If none found, return model_dir (trained_model directory).
@@ -81,15 +72,15 @@ def load_latest_checkpoint(model_dir):
         raise ValueError(f"Model directory not found: {model_dir}")
 
     ckpts = [d for d in os.listdir(model_dir) if d.startswith("checkpoint-")]
-    if not ckpts:
+    if not ckpts and verbose:
         print("[INFO] No checkpoints found. Using main model directory.")
         return model_dir
 
     # Sort by step number
     ckpts_sorted = sorted(ckpts, key=lambda x: int(x.split("-")[1]))
     last_ckpt = ckpts_sorted[-1]
-
-    print(f"[INFO] Using checkpoint: {last_ckpt}")
+    if verbose:
+        print(f"[INFO] Using checkpoint: {last_ckpt}")
     return os.path.join(model_dir, last_ckpt)
 
 
@@ -153,7 +144,6 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
     rgb_labels[final_labels == 1] = 255
     if do_save:
         os.makedirs(os.path.dirname(src_dest_preds_mask), exist_ok=True)
-        print(os.path.dirname(src_dest_preds_mask))
         Image.fromarray(final_labels.astype(np.uint8)).save(src_dest_preds_mask)
         if do_save_mask_as_img:
             Image.fromarray(rgb_labels.astype(np.uint8)).save(src_dest_preds_img)
@@ -164,20 +154,36 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
     return final_labels, rgb_labels, final_prob
 
 
-def produce_with_lower_res(src_img, res_frac, do_save=True, do_show=True):
+def produce_with_lower_res(src_img, src_dest, res_frac, do_save=True, do_show=True):
     img = Image.open(src_img)
     res_original = img.size
     low_res = tuple([int(x * res_frac) for x in res_original])
 
     img_low = img.resize((low_res), resample=Image.BILINEAR)
-    src_dest = os.path.splitext(src_img)[0] + f'_res_{res_frac}.tif'
+    src_final = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res_frac}.tif')
+    
     if do_save:
-        img_low.save(src_dest)
+        img_low.save(src_final)
     if do_show:
         plt.imshow(img_low)
     
-    return img_low, src_dest
+    return img_low, src_final
 
+
+def prob_to_rgb(prob_map, cmap_name="viridis"):
+    """
+    prob_map: (H, W) float32 in [0, 1]
+    returns: (H, W, 3) uint8
+    """
+    cmap = cm.get_cmap(cmap_name)
+
+    # Apply colormap → RGBA in [0,1]
+    rgba = cmap(prob_map)
+
+    # Drop alpha channel and convert to uint8
+    rgb = (rgba[..., :3] * 255).astype(np.uint8)
+
+    return rgb
 
 # ===========================================
 # ==== DOWNLOADING TILES ====================
