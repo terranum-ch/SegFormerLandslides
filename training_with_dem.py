@@ -88,7 +88,7 @@ def training_model(args):
     # Load model + processor
     if FROM_PRETRAIN:
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
-    processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
+    # processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
     model = SegformerForSemanticSegmentation.from_pretrained(
         PRETRAINED_MODEL,
         num_labels=2,
@@ -135,7 +135,7 @@ def training_model(args):
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             dem_dir=os.path.join(DATASET_DIR, "dem"),
-            processor=processor,
+            # processor=processor,
             transform=None
         )
 
@@ -143,7 +143,7 @@ def training_model(args):
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             dem_dir=os.path.join(DATASET_DIR, "dem"),
-            processor=processor,
+            # processor=processor,
             transform=None
         )
 
@@ -161,13 +161,13 @@ def training_model(args):
         train_subset = SegmentationDataset(
             image_dir=os.path.join(TRAINING_SET_DIR, "images"),
             mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
-            processor=processor,
+            # processor=processor,
             transform=None
         )
         val_subset = SegmentationDataset(
             image_dir=os.path.join(VALIDATION_SET_DIR, "images"),
             mask_dir=os.path.join(VALIDATION_SET_DIR, "masks"),
-            processor=processor,
+            # processor=processor,
             transform=None
         )
     else:
@@ -208,22 +208,23 @@ def training_model(args):
         fp16=True,                          # Mixed precision (if GPU supports)
         gradient_accumulation_steps=1,      # Increase effective batch size if needed
         dataloader_num_workers=NUM_WORKERS,           # Adjust according to CPU cores
-        disable_tqdm=False
+        disable_tqdm=False,
+        remove_unused_columns=False,
     )
 
     trainer = TrainValMetricsTrainer(
         confmat_dir=CONFMAT_DIR,
         model=model,
         args=training_args,
-        # data_collator=collate_with_filename,
+        data_collator=collate_with_filename,
         train_dataset=train_subset,
         eval_dataset= val_subset,
-        processing_class=processor,
+        # processing_class=processor,
         compute_metrics=compute_metrics,
     )
 
     trainer.add_callback(MetricsCallback(trainer=trainer, cf_dir=CONFMAT_DIR))
-    # trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
+    trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
     trainer.add_callback(SavesCurrentStateCallback(trainer=trainer, last_checkpoint_dir=LAST_CHECKPOINT_DIR))
 
     # Train
@@ -231,7 +232,7 @@ def training_model(args):
 
     # Save final model
     trainer.save_model(os.path.join(RESULTS_DIR, "segformer_trained_model"))
-    processor.save_pretrained(os.path.join(RESULTS_DIR, "segformer_trained_model"))
+    # processor.save_pretrained(os.path.join(RESULTS_DIR, "segformer_trained_model"))
 
     # Visualization
     state_file = os.path.join(LAST_CHECKPOINT_DIR, "trainer_state.json")
@@ -261,9 +262,9 @@ def training_model(args):
         conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
         sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
         sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
-        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
-        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
-        # show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
     else:
         print("CONFMAT NOT CREATED FOR BEST EPOCH")
         print("following does not exist:") 

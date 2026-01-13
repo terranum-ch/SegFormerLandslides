@@ -11,6 +11,7 @@ from rasterio.features import shapes
 from shapely.geometry import shape
 from omegaconf import OmegaConf
 from time import time
+import requests
 
 from utils.production_utils import download_tile, produce_with_lower_res, predict, geo_transfert, prob_to_rgb
 
@@ -23,6 +24,90 @@ warnings.filterwarnings(
     "ignore",
     category=NotGeoreferencedWarning
 )
+
+
+def tiles_downloading(
+        dest_tiles, 
+        downloading_mode, 
+        canton=None,
+        area=None,
+        year=None,
+        dest_not_empty='add'
+        ):
+    tiles_to_download = []
+    lst_tiles_src = []
+    os.makedirs(dest_tiles, exist_ok=True)
+    if len(os.listdir(dest_tiles)) > 0:
+        if dest_not_empty == 'replace':
+            shutil.rmtree(dest_tiles)
+            os.makedirs(dest_tiles, exist_ok=True)
+        elif dest_not_empty == 'stop':
+            raise PermissionError('The destination already contains files. Empty it or change parameter "dest_not_empty"')
+        
+    # find tiles to download
+    tiles_locs = gpd.read_file("utils/resources/tiles_locs/ch.swisstopo.images-swissimage-dop10.metadata.shp")
+    if downloading_mode == 'year':
+        tiles_locs = tiles_locs.loc[tiles_locs.datenstand == str(year)]
+    ids = tiles_locs.id.values
+    E = [x.split('_')[0] for x in ids]
+    N = [x.split('_')[1] for x in ids]
+    EN = [[int(x), int(y)] for x,y in zip(E,N)]
+
+    if downloading_mode in ['canton', 'area']:
+
+        # find area of interest
+        (Emin, Emax, Nmin, Nmax) = (0,0,0,0)
+        if downloading_mode == 'canton':
+            cantons = gpd.read_file('utils/resources/swissboundaries/swissBOUNDARIES3D_1_5_TLM_KANTONSGEBIET.shp')
+            if canton not in cantons.NAME.values:
+                raise AttributeError(f"The given canton's name is not correct. Please choos between the following: \n {cantons.NAME.values}")
+            
+            canton_polygons = cantons[cantons.NAME == canton]
+            Emin = int(canton_polygons.bounds.minx.values[0] // 1000)
+            Emax = int((canton_polygons.bounds.maxx.values[0] + 1) // 1000)
+            Nmin = int(canton_polygons.bounds.miny.values[0] // 1000)
+            Nmax = int((canton_polygons.bounds.maxy.values[0] + 1) // 1000)
+        elif downloading_mode == 'area':
+            Emin = int(area.Emin)
+            Emax = int(area.Emax)
+            Nmin = int(area.Nmin)
+            Nmax = int(area.Nmax)
+
+        tiles_to_download = [x for x in EN if Emin <= x[0] <= Emax and Nmin <= x[1] <= Nmax]
+
+        # Gives information about tiles to be downloaded
+        text = f"""
+    ({Emin},{Nmax+1}) --- ({Emax+1},{Nmax+1})
+        |               |
+        |               |
+        |               |
+    ({Emin},{Nmin}) --- ({Emax+1},{Nmin})
+    """
+        if downloading_mode == 'canton':
+            print(f"Processing canton {canton} with following area ({len(tiles_to_download)} tiles):")
+        else:
+            print(f"Processing following area ({len(tiles_to_download)} tiles):")
+        print(text)
+    elif downloading_mode in ['year', 'full']:
+        
+        tiles_to_download = EN
+
+        # Gives information about tiles to be downloaded
+        if downloading_mode == 'year':
+            print(f"Processing data of the year {year} ({len(tiles_to_download)} tiles):")
+        else:
+            print(f"Processing all of Switzerland ({len(tiles_to_download)})")
+    else:
+        raise AttributeError("downloader.mode is not a valid value!")
+        
+    # download tiles
+    for _, tile in tqdm(enumerate(tiles_to_download), total=len(tiles_to_download), desc="Downloading"):
+        tile_src = download_tile(tile[0], tile[1], dest_tiles)
+        if tile_src != None:
+            lst_tiles_src.append(tile_src)
+
+    return lst_tiles_src
+
 
 def prediction(src_img, src_inter, src_dest_preds, src_dest_probas, resolutions, model_dir, tile_size=512, stride=256, threshold_proba= 0.5, threshold_grouping=0.5):
     # predict at each resolution
@@ -175,6 +260,11 @@ def production(args):
     # Load parameters
     TILES_DEST = args.downloader.destination
     DEST_NOT_EMPTY = args.downloader.dest_not_empty
+    SKIP_AUTO_DOWNLOADING = args.downloader.skip_auto_downloading
+    DOWNLOADING_MODE = args.downloader.mode
+    CANTON = args.downloader.canton
+    AREA = args.downloader.area
+    YEAR = args.downloader.year
     MODEL_DIR = args.predictions.model_dir
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
@@ -189,78 +279,31 @@ def production(args):
     dest_vectors_dir = os.path.join(TILES_DEST, 'vectors')
     dest_originals_dir = os.path.join(TILES_DEST, 'originals')
     dest_inter_dir = os.path.join(TILES_DEST, 'inter')
+    os.makedirs(TILES_DEST, exist_ok=True)
     os.makedirs(dest_preds_dir, exist_ok=True)
     os.makedirs(dest_probas_dir, exist_ok=True)
     os.makedirs(dest_clusters_dir, exist_ok=True)
     os.makedirs(dest_vectors_dir, exist_ok=True)
     os.makedirs(dest_inter_dir, exist_ok=True)
 
-    # === TILES LOADING ===
-    # =====================
-    lst_tiles_src = []
-    if not args.downloader.skip_auto_download:
-        os.makedirs(TILES_DEST, exist_ok=True)
-        os.makedirs(dest_originals_dir, exist_ok=True)
-        if len(os.listdir(dest_originals_dir)) > 0:
-            if DEST_NOT_EMPTY == 'replace':
-                shutil.rmtree(dest_originals_dir)
-                os.makedirs(dest_originals_dir, exist_ok=True)
-            elif DEST_NOT_EMPTY == 'stop':
-                raise PermissionError('The destination already contains files. Empty it or change parameter "dest_not_empty"')
-
-
-        # find area of interest
-        (Emin, Emax, Nmin, Nmax) = (0,0,0,0)
-        if args.downloader.mode == 'canton':
-            CANTON = args.downloader.canton
-            cantons = gpd.read_file('utils/resources/swissboundaries/swissBOUNDARIES3D_1_5_TLM_KANTONSGEBIET.shp')
-            if CANTON not in cantons.NAME.values:
-                raise AttributeError(f"The given canton's name is not correct. Please choos between the following: \n {cantons.NAME.values}")
-            
-            canton = cantons[cantons.NAME == CANTON]
-            Emin = int(canton.bounds.minx.values[0] // 1000)
-            Emax = int((canton.bounds.maxx.values[0] + 1) // 1000)
-            Nmin = int(canton.bounds.miny.values[0] // 1000)
-            Nmax = int((canton.bounds.maxy.values[0] + 1) // 1000)
-        elif args.downloader.mode == 'area':
-            Emin = int(args.downloader.area.Emin)
-            Emax = int(args.downloader.area.Emax)
-            Nmin = int(args.downloader.area.Nmin)
-            Nmax = int(args.downloader.area.Nmax)
-        
-        # find tiles to download
-        tiles_locs = gpd.read_file("utils/resources/tiles_locs/ch.swisstopo.images-swissimage-dop10.metadata.shp")
-        ids = tiles_locs.id.values
-        E = [x.split('_')[0] for x in ids]
-        N = [x.split('_')[1] for x in ids]
-        EN = [[int(x), int(y)] for x,y in zip(E,N)]
-
-        tiles_to_download = []
-        if args.downloader.mode == 'full':
-            tiles_to_download = EN
-        else:
-            tiles_to_download = [x for x in EN if Emin <= x[0] <= Emax and Nmin <= x[1] <= Nmax]
-
-        # download tiles
-        text = f"""
-    ({Emin},{Nmax+1}) --- ({Emax+1},{Nmax+1})
-         |               |
-         |               |
-         |               |
-    ({Emin},{Nmin}) --- ({Emax+1},{Nmin})
-    """
-        if args.downloader.mode == 'canton':
-            print(f"Processing canton {CANTON} with following area ({len(tiles_to_download)} tiles):")
-        else:
-            print(f"Processing following area ({len(tiles_to_download)} tiles):")
-        print(text)
-        for _, tile in tqdm(enumerate(tiles_to_download), total=len(tiles_to_download), desc="Downloading"):
-            tile_src = download_tile(tile[0], tile[1], dest_originals_dir)
-            if tile_src != None:
-                lst_tiles_src.append(tile_src)
+    # === TILES DOWNLOADING ===
+    # =========================
+    if not SKIP_AUTO_DOWNLOADING:
+        lst_tiles_src = tiles_downloading(
+            dest_tiles=dest_originals_dir,
+            downloading_mode=DOWNLOADING_MODE,
+            canton=CANTON,
+            area=AREA,
+            year=YEAR,
+            dest_not_empty=DEST_NOT_EMPTY
+        )
     else:
         img_exts = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp']
         lst_tiles_src = [os.path.join(TILES_DEST, x) for x in os.listdir(TILES_DEST) if os.path.splitext(x)[1].lower() in img_exts]
+
+    if len(lst_tiles_src) == 0:
+        print("NO TILE TO PROCESS!")
+        return
 
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
         

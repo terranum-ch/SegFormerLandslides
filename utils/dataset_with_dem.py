@@ -6,7 +6,7 @@ from PIL import Image
 
 
 class SegmentationDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, dem_dir, processor, transform=None):
+    def __init__(self, image_dir, mask_dir, dem_dir, processor=None, transform=None):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.dem_dir = dem_dir

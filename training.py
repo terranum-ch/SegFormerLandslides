@@ -170,7 +170,7 @@ def training_model(args):
         # Evaluation
         eval_strategy="epoch",              # Evaluate at the end of each epoch
         load_best_model_at_end=True,        # Load checkpoint with best metric
-        metric_for_best_model="loss",       # Adjust if using other metrics
+        metric_for_best_model="mean_dice",       # Adjust if using other metrics
 
         # Others
         fp16=True,                          # Mixed precision (if GPU supports)

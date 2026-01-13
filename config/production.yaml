@@ -1,8 +1,8 @@
 downloader:
-  destination: data/test_production/originals
+  destination: data/test_production/year
   dest_not_empty: replace # choose between 'add', 'stop', 'replace'
-  skip_auto_download: True
-  mode: area  # can be chosen between 'full', 'region' and 'area'
+  skip_auto_downloading: False
+  mode: year  # can be chosen between 'full', 'region', 'area' and 'year'
   canton: "Genève"  # which canton is chosen if the mode is 'canton'
   # canton need to be chosen between:
   #   ['Genève' 'Thurgau' 'Valais' 'Aargau' 'Schwyz' 'Zürich' 'Obwalden'
@@ -15,6 +15,7 @@ downloader:
     Emax: 2589
     Nmin: 1160
     Nmax: 1169
+  year: 2025  # which year if the mode is 'year'
 predictions:
   model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   threshold_preds: 0.5

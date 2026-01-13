@@ -17,31 +17,29 @@ from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 
 
 # ===========================================
-# ==== VECTORIZATION ========================
-# ===========================================
+# ==== DOWNLOADING TILES ====================
+# =========================================== 
+def download_tile(E, N, dest, suffixe=''):
+    year = datetime.date.today().year
+    url_img = f"https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_{year}_{E}-{N}/swissimage-dop10_{year}_{E}-{N}_0.1_2056.tif"
+    count_down = 0
+    while requests.get(url_img).status_code != 200:
+        if count_down > 10:
+            print(f"Could not find a tile for coordinates {E}-{N}")
+            return
+        year -= 1
+        count_down += 1
+        url_img = f"https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_{year}_{E}-{N}/swissimage-dop10_{year}_{E}-{N}_0.1_2056.tif"
 
-def geo_transfert(img_geo, img_target, same_file=True):
-    with rasterio.open(img_geo) as src:
-        crs = src.crs
-        transform = src.transform
-
-    with rasterio.open(img_target) as pred:
-        pred_data = pred.read()
-        pred_profile = pred.profile
-        
-    pred_profile.update({
-        "crs": crs,
-        "transform": transform
-    })
-
-    src_new_target = os.path.splitext(img_target)[0] +"_georef.tif" if not same_file else img_target
-    with rasterio.open(src_new_target, "w", **pred_profile) as dst:
-        dst.write(pred_data)
-    return src_new_target
+    img_data = requests.get(url_img).content
+    file_src = os.path.join(dest, f"tile_{E}-{N}_{year}_{suffixe}.tif")
+    with open(file_src, 'wb') as handler:
+        handler.write(img_data)
+    return file_src
 
 
 # ===========================================
-# ==== REGROUPING SAMPLES ===================
+# ==== PREDICTIONS ===========================
 # ===========================================
 def mirror_pad_image(img, tile_size, stride):
     """
@@ -185,33 +183,31 @@ def prob_to_rgb(prob_map, cmap_name="viridis"):
 
     return rgb
 
+
 # ===========================================
-# ==== DOWNLOADING TILES ====================
-# =========================================== 
-def download_tile(E, N, dest, suffixe=''):
-    year = datetime.date.today().year
-    url_img = f"https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_{year}_{E}-{N}/swissimage-dop10_{year}_{E}-{N}_0.1_2056.tif"
-    count_down = 0
-    while requests.get(url_img).status_code != 200:
-        if count_down > 10:
-            print(f"Could not find a tile for coordinates {E}-{N}")
-            return
-        year -= 1
-        count_down += 1
-        url_img = f"https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_{year}_{E}-{N}/swissimage-dop10_{year}_{E}-{N}_0.1_2056.tif"
+# ==== VECTORIZATION ========================
+# ===========================================
 
-    img_data = requests.get(url_img).content
-    file_src = os.path.join(dest, f"tile_{E}-{N}_{year}_{suffixe}.tif")
-    with open(file_src, 'wb') as handler:
-        handler.write(img_data)
-    return file_src
+def geo_transfert(img_geo, img_target, same_file=True):
+    with rasterio.open(img_geo) as src:
+        crs = src.crs
+        transform = src.transform
 
-    
-# def get_tiles_from_canton(cantons, tiles_locs, choice):
-#     cantons_dict = {}
-#     print("Number of tiles in Switzerland: ", len(EN))
-#     estimated_time = round(len(EN)/20/60, 2)
-#     estimated_size = round(len(EN) * 0.054, 2)
+    with rasterio.open(img_target) as pred:
+        pred_data = pred.read()
+        pred_profile = pred.profile
+        
+    pred_profile.update({
+        "crs": crs,
+        "transform": transform
+    })
+
+    src_new_target = os.path.splitext(img_target)[0] +"_georef.tif" if not same_file else img_target
+    with rasterio.open(src_new_target, "w", **pred_profile) as dst:
+        dst.write(pred_data)
+    return src_new_target
+
 
 # if __name__ == "__main__":
 #     print(datetime.date.today().year)
+
