@@ -173,7 +173,7 @@ def prediction(src_img, src_inter, src_dest_preds, src_dest_probas, resolutions,
     final_probas /= len(probas)
     # final_probas_rgb = prob_to_rgb(final_probas)
 
-    src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + '_mask.tif')
+    src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + '_probas.tif')
     # src_final_probas_img = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + '_img.tif')
 
     Image.fromarray(final_probas).save(src_final_probas_mask)
@@ -280,11 +280,6 @@ def production(args):
     dest_originals_dir = os.path.join(TILES_DEST, 'originals')
     dest_inter_dir = os.path.join(TILES_DEST, 'inter')
     os.makedirs(TILES_DEST, exist_ok=True)
-    os.makedirs(dest_preds_dir, exist_ok=True)
-    os.makedirs(dest_probas_dir, exist_ok=True)
-    os.makedirs(dest_clusters_dir, exist_ok=True)
-    os.makedirs(dest_vectors_dir, exist_ok=True)
-    os.makedirs(dest_inter_dir, exist_ok=True)
 
     # === TILES DOWNLOADING ===
     # =========================
@@ -304,6 +299,12 @@ def production(args):
     if len(lst_tiles_src) == 0:
         print("NO TILE TO PROCESS!")
         return
+
+    os.makedirs(dest_preds_dir, exist_ok=True)
+    os.makedirs(dest_probas_dir, exist_ok=True)
+    os.makedirs(dest_clusters_dir, exist_ok=True)
+    os.makedirs(dest_vectors_dir, exist_ok=True)
+    os.makedirs(dest_inter_dir, exist_ok=True)
 
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
         

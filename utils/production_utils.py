@@ -32,7 +32,10 @@ def download_tile(E, N, dest, suffixe=''):
         url_img = f"https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_{year}_{E}-{N}/swissimage-dop10_{year}_{E}-{N}_0.1_2056.tif"
 
     img_data = requests.get(url_img).content
-    file_src = os.path.join(dest, f"tile_{E}-{N}_{year}_{suffixe}.tif")
+    if suffixe != '':
+        file_src = os.path.join(dest, f"tile_{E}-{N}_{year}_{suffixe}.tif")
+    else:
+        file_src = os.path.join(dest, f"tile_{E}-{N}_{year}.tif")
     with open(file_src, 'wb') as handler:
         handler.write(img_data)
     return file_src
