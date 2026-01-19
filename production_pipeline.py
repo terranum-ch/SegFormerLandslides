@@ -188,35 +188,37 @@ def clustering(src_img, src_dest, eps, min_samples, min_cluster_size,  color_pal
     img_arr = np.array(img)
     pos_ls = np.argwhere(img_arr)
 
-    # create cluster map
-    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(pos_ls)
-    cluster_labels = clustering.labels_
-    lst_clusters = set(cluster_labels)
-
     mask_clusters = np.zeros(img_arr.shape)
-
-    # unpack coordinates
-    rows = pos_ls[:, 0]
-    cols = pos_ls[:, 1]
-
-    mask_clusters[rows, cols] = cluster_labels
-    mask_clusters[mask_clusters == -1] = 0
-
-    # saving clusters
-    distinct_colors_rgb8 = [(x, y, z, 255) for [x,y,z] in color_palette]
     rgb_clusters = np.zeros((mask_clusters.shape[0], mask_clusters.shape[1], 4))
 
-    # for _, cluster in tqdm(enumerate(lst_clusters), total=len(lst_clusters)):
-    for cluster in lst_clusters:
-        if np.sum(mask_clusters == cluster) < min_cluster_size:
-            rgb_clusters[mask_clusters == cluster] = [255, 255, 255, 0]
-            mask_clusters[mask_clusters == cluster] = 0
-        else:
-            id_color = cluster % len(distinct_colors_rgb8)
-            rgb_clusters[mask_clusters == cluster] = distinct_colors_rgb8[id_color]
+    if len(pos_ls) > 0:
+        # create cluster map
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(pos_ls)
+        cluster_labels = clustering.labels_
+        lst_clusters = set(cluster_labels)
 
-    if np.sum(mask_clusters) == 0:
-        return
+
+        # unpack coordinates
+        rows = pos_ls[:, 0]
+        cols = pos_ls[:, 1]
+
+        mask_clusters[rows, cols] = cluster_labels
+        mask_clusters[mask_clusters == -1] = 0
+
+        # saving clusters
+        distinct_colors_rgb8 = [(x, y, z, 255) for [x,y,z] in color_palette]
+
+        # for _, cluster in tqdm(enumerate(lst_clusters), total=len(lst_clusters)):
+        for cluster in lst_clusters:
+            if np.sum(mask_clusters == cluster) < min_cluster_size:
+                rgb_clusters[mask_clusters == cluster] = [255, 255, 255, 0]
+                mask_clusters[mask_clusters == cluster] = 0
+            else:
+                id_color = cluster % len(distinct_colors_rgb8)
+                rgb_clusters[mask_clusters == cluster] = distinct_colors_rgb8[id_color]
+
+    # if np.sum(mask_clusters) == 0:
+    #     return
     
     # Background in white
     rgb_clusters[mask_clusters == 0] = (255,255,255, 0)
@@ -233,6 +235,8 @@ def clustering(src_img, src_dest, eps, min_samples, min_cluster_size,  color_pal
 def vectorize(src_target, src_dest):
     with rasterio.open(src_target) as src:
         mask = src.read(1)
+        if np.sum(mask) == 0:
+            return
         transform = src.transform
         crs = src.crs
 
@@ -247,7 +251,7 @@ def vectorize(src_target, src_dest):
     gdf = gpd.GeoDataFrame(records, crs=crs)
 
     # Save to GeoPackage
-    src_polygons = os.path.splitext(src_target)[0] + '_landslides.gpkg'
+    # src_polygons = os.path.splitext(src_target)[0] + '_landslides.gpkg'
     src_polygons = os.path.join(src_dest, os.path.splitext(os.path.basename(src_target))[0] + '_landslides.gpkg')
     gdf.to_file(src_polygons, driver="GPKG")
     

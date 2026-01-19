@@ -27,7 +27,7 @@ torch.cuda.set_per_process_memory_fraction(0.95)
 def get_best_checkpoint(training_dir):
     print(training_dir)
     print(os.listdir(training_dir))
-    lst_checkpoints = [x for x in os.listdir(training_dir) if 'checkpoint' in x and os.path.isdir(os.path.join(training_dir, x))]
+    lst_checkpoints = [x for x in os.listdir(training_dir) if 'checkpoint' in x and not 'last' in x and os.path.isdir(os.path.join(training_dir, x))]
     print(lst_checkpoints)
 
     lst_steps = [int(x.split('-')[-1]) for x in lst_checkpoints]

@@ -17,7 +17,8 @@ downloader:
     Nmax: 1169
   year: 2025  # which year if the mode is 'year'
 predictions:
-  model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
+  # model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
+  model_dir: results/training/20260119_091455_10_epochs_Longxi_Bern_v2_focal_dice_losses_with_false_pos
   threshold_preds: 0.5
   threshold_grouping: 0.5
   tile_size: 512

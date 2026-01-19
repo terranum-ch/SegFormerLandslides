@@ -1,16 +1,16 @@
 output_dir: "results/training"
-output_suffixe: Longxi_Bern_v2_focal_dice_losses
+output_suffixe: Longxi_Bern_v2_focal_dice_losses_with_false_pos
 # output_suffixe: test
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 5
+num_epochs: 10
 batch_size: 8
 num_workers: 2
 learning_rate: 5e-5
 weight_decay: 0.01
 
-from_pretrain: False
-pretrain_dir: results/training/segformer_output_50_epochs
+from_pretrain: True
+pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
 resume_from_existing: False
 existing_dir: results/training/20251217_154136_2_epochs_Bern_v2_da_splitsets
 
