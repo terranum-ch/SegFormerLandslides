@@ -9,6 +9,12 @@ import rasterio
 import requests
 import datetime
 
+import torch
+import torch.nn.functional as F
+from PIL import Image
+from itertools import product
+from time import time
+
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
@@ -113,7 +119,7 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.to(DEVICE)
     model.eval()
-
+    time_to_predict = 0
     for x in range(0, W - tile_size + 1, stride):# manage if borders reached
         for y in range(0, H - tile_size + 1, stride):
             x0 = min(x, W - tile_size)
@@ -122,8 +128,9 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
             # Crop region (handles border tiles automatically)
             tile = img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :]
             tile_PIL = Image.fromarray(tile).convert("RGB")
+            dt = time()
             _, logits  = predict_image(model, processor, tile_PIL, DEVICE)
-
+            time_to_predict += time() - dt
             prob = torch.softmax(logits, dim=1).cpu().numpy()
             landslide_prob = prob[:, 1].reshape((tile_size, tile_size))
 
@@ -132,6 +139,7 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
             prob_acc[y0:y0+tile_size, x0:x0+tile_size] += landslide_prob
             weight_acc[y0:y0+tile_size, x0:x0+tile_size] += 1
 
+    print("TIME USED BY THE MODEL: ", time_to_predict)
     full_prob = prob_acc / np.maximum(weight_acc, 1e-6)
     final_prob = full_prob[0:H_original, 0:W_original]
     
@@ -148,6 +156,118 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
         Image.fromarray(final_labels.astype(np.uint8)).save(src_dest_preds_mask)
         if do_save_mask_as_img:
             Image.fromarray(rgb_labels.astype(np.uint8)).save(src_dest_preds_img)
+    
+    if do_show:
+        plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8)))
+
+    return final_labels, rgb_labels, final_prob
+
+
+def predict_batch_array(
+    model,
+    batch,
+    device="cuda",
+):
+    """
+    Parameters
+    ----------
+    batch_images : np.ndarray
+        Shape (B, H, W, 3), RGB images in RAM
+
+    Returns
+    -------
+    pred_masks : np.ndarray
+        Shape (B, H, W)
+    upsampled_logits : torch.Tensor
+        Shape (B, C, H, W) on CPU
+    """
+
+    assert batch.ndim == 4 and batch.shape[-1] == 3
+
+    _, H, W, _ = batch.shape
+    batch = batch.permute(0, 3, 1, 2)                  # (B, 3, H, W)
+    batch = batch.float() / 255.0
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,3,1,1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,3,1,1)
+    batch = (batch - mean) / std
+
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        logits = model(batch).logits  # (B,C,h,w)
+
+        logits = F.interpolate(
+            logits,
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False
+        )
+
+    return logits  # keep on GPU
+
+
+def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):
+    if not isinstance(image, Image.Image):
+        img_path = image
+        image = Image.open(image)
+    img_arr = np.array(image)
+
+    img_padded, _, _ = mirror_pad_image(img_arr, tile_size, stride)
+    H_original, W_original  = img_arr.shape[:2]
+    H, W = img_padded.shape[:2]
+    
+    # prepare arrays
+    prob_acc = torch.zeros((H,W), device=model.device)
+    weight_acc = torch.zeros((H,W), device=model.device)
+
+    list_xpos = range(0, W - tile_size + 1, stride)
+    list_ypos = range(0, H - tile_size + 1, stride)
+    list_positions = list(product(list_xpos, list_ypos))
+
+    batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
+    initial_poses = []
+
+    # time_to_predict = 0
+    for id_sample, (x,y) in enumerate(list_positions):
+        x0 = min(x, W - tile_size)
+        y0 = min(y, H - tile_size)
+        tile = torch.tensor(img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :])
+        batch[id_sample % batch_size, ...] = tile
+        initial_poses.append((x0, y0))
+
+        # Crop region (handles border tiles automatically)
+        if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
+            # dt = time()
+            logits = predict_batch_array(model, batch, model.device)
+            probs = torch.softmax(logits, dim=1)[:, ]
+            # time_to_predict += time() - dt
+
+            for i in range(len(initial_poses)):
+                xi, yi = initial_poses[i]
+                prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))
+                weight_acc[yi:yi+tile_size, xi:xi+tile_size] += 1
+
+            batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
+            initial_poses = []
+
+    # print("TIME USED BY THE MODEL: ", time_to_predict)
+
+    # final_prob = torch.divide(prob_acc, torch.maximum(weight_acc, 1e-6))[0:H_original, 0:W_original].cpu().numpy()
+    final_prob = torch.divide(prob_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
+    # full_prob = prob_acc / np.maximum(weight_acc, 1e-6)
+    # final_prob = torch.divide(prob_acc, )[0:H_original, 0:W_original].cpu().numpy()
+    
+    final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
+    final_labels[final_prob >= th] = 1
+
+    src_dest_preds_mask = os.path.splitext(img_path)[0] + '_preds_mask.tif'
+    src_dest_preds_img = os.path.splitext(img_path)[0] + '_preds_img.tif'
+
+    rgb_labels = np.zeros((final_labels.shape[0], final_labels.shape[1], 3), dtype=np.uint8)
+    rgb_labels[final_labels == 1] = 255
+    if do_save:
+        os.makedirs(os.path.dirname(src_dest_preds_mask), exist_ok=True)
+        Image.fromarray(final_labels).save(src_dest_preds_mask)
+        if do_save_mask_as_img:
+            Image.fromarray(rgb_labels).save(src_dest_preds_img)
     
     if do_show:
         plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8)))

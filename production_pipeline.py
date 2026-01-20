@@ -11,9 +11,11 @@ from rasterio.features import shapes
 from shapely.geometry import shape
 from omegaconf import OmegaConf
 from time import time
-import requests
+import torch
 
-from utils.production_utils import download_tile, produce_with_lower_res, predict, geo_transfert, prob_to_rgb
+from utils.production_utils import download_tile, produce_with_lower_res, predict, predict_with_batch, geo_transfert, prob_to_rgb, load_latest_checkpoint
+
+from transformers import SegformerForSemanticSegmentation
 
 # Clearing warnings
 Image.MAX_IMAGE_PIXELS = None
@@ -109,19 +111,40 @@ def tiles_downloading(
     return lst_tiles_src
 
 
-def prediction(src_img, src_inter, src_dest_preds, src_dest_probas, resolutions, model_dir, tile_size=512, stride=256, threshold_proba= 0.5, threshold_grouping=0.5):
+def prediction(
+        src_img, 
+        src_inter, 
+        src_dest_preds, 
+        src_dest_probas, 
+        resolutions, 
+        model_dir, 
+        batch_size=8,
+        tile_size=512, 
+        stride=256, 
+        threshold_proba= 0.5, 
+        threshold_grouping=0.5):
+    
     # predict at each resolution
     images = []
     preds = []
     masks = []
     probas = []
 
+    # load model
+    ckpt_path = load_latest_checkpoint(model_dir)
+    model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model.to(DEVICE)
+    model.eval()
+
+    # time0 = time()
     for res in resolutions:
         res_img, src_res_img = produce_with_lower_res(src_img, src_inter, res, do_show=False)
-        pred_mask, preds_img, proba_img = predict(
+        pred_mask, preds_img, proba_img = predict_with_batch(
             image=res_img, 
-            img_path=src_res_img, 
-            model_dir=model_dir, 
+            model=model, 
+            img_path=src_res_img,
+            batch_size=batch_size,
             tile_size=tile_size,
             stride=stride,
             th=threshold_proba, 
@@ -131,7 +154,8 @@ def prediction(src_img, src_inter, src_dest_preds, src_dest_probas, resolutions,
         preds.append(preds_img)
         masks.append(pred_mask)
         probas.append(proba_img)
-
+    # print("TIME FOR THE PREDICTION LOOP: ", time() - time0)
+    # time0 = time()
     # merge different resolutions into one final
     original_img = Image.open(src_img)
 
@@ -178,7 +202,7 @@ def prediction(src_img, src_inter, src_dest_preds, src_dest_probas, resolutions,
 
     Image.fromarray(final_probas).save(src_final_probas_mask)
     # Image.fromarray(final_probas_rgb.astype(np.uint8)).save(src_final_probas_img)
-
+    # print("TIME FOR THE REST: ", time() - time0)
     return src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
 
 
@@ -270,6 +294,7 @@ def production(args):
     AREA = args.downloader.area
     YEAR = args.downloader.year
     MODEL_DIR = args.predictions.model_dir
+    BATCH_SIZE = args.predictions.batch_size
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
@@ -314,6 +339,7 @@ def production(args):
         
         # === PREDICTIONS =====
         # =====================
+        # time_start = time()
         src_pred_mask, src_pred_img, src_proba_mask = prediction(
             src_img=src_img,
             src_inter=dest_inter_dir,
@@ -321,11 +347,14 @@ def production(args):
             src_dest_probas=dest_probas_dir,
             resolutions=RESOLUTIONS, 
             model_dir=MODEL_DIR, 
+            batch_size=BATCH_SIZE,
             tile_size=TILE_SIZE,
             stride=STRIDE,
             threshold_proba=THRESHOLD_PREDS, 
             threshold_grouping=THRESHOLD_GROUPING
             )
+        # print("TIME TO PREDICT: ", time() - time_start)
+        # time_start = time()
 
         # === VECTORIZATION ===
         # =====================
@@ -359,6 +388,8 @@ def production(args):
 
             vectorize(src_clusters_mask, dest_vectors_dir)
 
+        # print("TIME TO VECTORIZE: ", time() - time_start)
+        time_start = time()
     if DO_RM_INTERMED_FILES:
         shutil.rmtree(dest_inter_dir)
 

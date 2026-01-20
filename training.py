@@ -37,7 +37,7 @@ def get_best_checkpoint(training_dir):
     return os.path.join(training_dir, best_checkpoint)
 
 
-def training_model(args):
+def training(args):
     OUTPUT_DIR = rf"{args.train.output_dir}"
     OUTPUT_SUFFIXE = args.train.output_suffixe
     VAL_SPLIT = args.train.val_split
@@ -56,7 +56,7 @@ def training_model(args):
     PRETRAIN_DIR = args.train.pretrain_dir
 
     RESUME_FROM_EXISTING = args.train.resume_from_existing
-    EXISTING_DIR_TO_RESUME_FROM = args.train.existing_dir if RESUME_FROM_EXISTING else None
+    EXISTING_DIR_TO_RESUME_FROM = os.path.join(args.train.existing_dir, 'last_checkpoint') if RESUME_FROM_EXISTING else None
 
     try:
         assert FROM_PRETRAIN + RESUME_FROM_EXISTING < 2
@@ -95,11 +95,21 @@ def training_model(args):
     )
 
     # Defining a transform for data augmentation
-    train_transform = A.Compose([
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-    ])
+    if args.train.do_da_scaling:
+        train_transform = A.Compose([
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+            A.Downscale((0.1, 1.0), p=1.0),
+        ])
+    else:
+        train_transform = A.Compose([
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+            # A.Downscale((0.1, 1.0), p=1.0),
+        ])
+        
     if DATASET_MODE == 'auto':
         full_dataset_train = SegmentationDataset(
             image_dir=os.path.join(DATASET_DIR, "images"),
@@ -252,4 +262,4 @@ if __name__ == "__main__":
 
     args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
 
-    training_model(args)
+    training(args)

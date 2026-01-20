@@ -90,24 +90,24 @@ class TrainValMetricsTrainer(Trainer):
         self.confmat = np.zeros((2,2), dtype=np.uint64)
         self.eval_preds = {}
 
-        # compute weights for loss
-        dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
-        count_ls = 0
-        count_bck = 0
-        print("Computing weights...")
-        for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
-            inputs = dataset[samp_id]
-            labels = inputs['labels']
-            count_ls += torch.sum(labels == 1)
-            count_bck += torch.sum(labels == 0)
+        # # compute weights for loss
+        # dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
+        # count_ls = 0
+        # count_bck = 0
+        # print("Computing weights...")
+        # for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
+        #     inputs = dataset[samp_id]
+        #     labels = inputs['labels']
+        #     count_ls += torch.sum(labels == 1)
+        #     count_bck += torch.sum(labels == 0)
         
-        tot = count_ls + count_bck
-        self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
-        print(f"Weights:\n\tBackground: {self.class_weights[0]}\n\tLandslide: {self.class_weights[1]}")
+        # tot = count_ls + count_bck
+        # self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
+        # print(f"Weights:\n\tBackground: {self.class_weights[0]}\n\tLandslide: {self.class_weights[1]}")
 
 
     @staticmethod
-    def logits_to_preds(logits, height=512, width=512):
+    def logits_to_preds(logits):
         # Resize predictions to match label size
         logits = torch.nn.functional.interpolate(
             torch.tensor(logits),
@@ -133,7 +133,7 @@ class TrainValMetricsTrainer(Trainer):
 
         logits = logits.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy().astype(np.uint8)
-        preds = self.logits_to_preds(logits).astype(np.uint8)
+        # preds = self.logits_to_preds(logits).astype(np.uint8)
 
         # Save them for end-of-epoch metrics
         dict_for_metrics = {'predictions': logits, "label_ids": labels}
@@ -389,12 +389,12 @@ class TrainValMetricsTrainer(Trainer):
             align_corners=False
         )
 
-        ce_loss = F.cross_entropy(
-            logits,
-            labels,
-            weight=self.class_weights,
-            ignore_index=255  # very important for segmentation
-        )
+        # ce_loss = F.cross_entropy(
+        #     logits,
+        #     labels,
+        #     weight=self.class_weights,
+        #     ignore_index=255  # very important for segmentation
+        # )
         f_loss = focal_loss(logits, labels)
 
         d_loss = dice_loss(logits, labels)

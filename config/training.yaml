@@ -1,20 +1,21 @@
 output_dir: "results/training"
-output_suffixe: Longxi_Bern_v2_focal_dice_losses_with_false_pos
+output_suffixe: Bern_v2_focal_dice_losses_with_1800_false_pos_from_scratch
 # output_suffixe: test
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 10
+num_epochs: 50
 batch_size: 8
 num_workers: 2
 learning_rate: 5e-5
 weight_decay: 0.01
 
-from_pretrain: True
+from_pretrain: False
 pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
 resume_from_existing: False
-existing_dir: results/training/20251217_154136_2_epochs_Bern_v2_da_splitsets
+existing_dir: results/training/20260120_112049_50_epochs_Bern_v2_focal_dice_losses_with_1800_false_pos_from_scratch
 
 do_data_augmentation: True
+do_da_scaling: False
 
 pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
 # save_preds_lbls: True
