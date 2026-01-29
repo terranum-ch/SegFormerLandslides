@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import argparse
 import torch
 from torch.utils.data import Subset, random_split
 from transformers import (
@@ -256,10 +258,21 @@ def training(args):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="")
+    args = parser.parse_args()
+    cfg_path = args.config
 
-    conf_train = OmegaConf.load('./config/training.yaml')
-    conf_dataset = OmegaConf.load('./config/dataset.yaml')
+    print(cfg_path)
 
-    args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+    if cfg_path != "":
+        print("- Training from argument - ")
+        args = OmegaConf.load(cfg_path)
+    else:
+        print("- Training from yaml file - ")
+        conf_train = OmegaConf.load('./config/training.yaml')
+        conf_dataset = OmegaConf.load('./config/dataset.yaml')
+
+        args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
 
     training(args)

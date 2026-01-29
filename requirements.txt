@@ -18,3 +18,5 @@ yacs
 pyyaml
 einops
 omegaconf
+tifffile
+imagecodecs

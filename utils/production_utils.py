@@ -97,7 +97,7 @@ def gaussian_weight(size, sigma=0.125):
     return np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
 
 
-def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):
+def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, output_format='png', do_show=True, do_save=True, do_save_mask_as_img=True):
     if not isinstance(image, Image.Image):
         img_path = image
         image = Image.open(image)
@@ -146,19 +146,19 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
     final_labels = np.zeros(final_prob.shape)
     final_labels[final_prob >= th] = 1
 
-    src_dest_preds_mask = os.path.splitext(img_path)[0] + '_preds_mask.tif'
-    src_dest_preds_img = os.path.splitext(img_path)[0] + '_preds_img.tif'
+    src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.{output_format}'
+    src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.{output_format}'
 
     rgb_labels = np.zeros((final_labels.shape[0], final_labels.shape[1], 3))
     rgb_labels[final_labels == 1] = 255
     if do_save:
         os.makedirs(os.path.dirname(src_dest_preds_mask), exist_ok=True)
-        Image.fromarray(final_labels.astype(np.uint8)).save(src_dest_preds_mask)
+        Image.fromarray(final_labels.astype(np.uint8), mode='L').save(src_dest_preds_mask)
         if do_save_mask_as_img:
-            Image.fromarray(rgb_labels.astype(np.uint8)).save(src_dest_preds_img)
+            Image.fromarray(rgb_labels.astype(np.uint8), mode='RGB').save(src_dest_preds_img)
     
     if do_show:
-        plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8)))
+        plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
 
     return final_labels, rgb_labels, final_prob
 
@@ -204,7 +204,7 @@ def predict_batch_array(
     return logits  # keep on GPU
 
 
-def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):
+def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, output_format='png', do_show=True, do_save=True, do_save_mask_as_img=True):
     if not isinstance(image, Image.Image):
         img_path = image
         image = Image.open(image)
@@ -258,30 +258,30 @@ def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512,
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
 
-    src_dest_preds_mask = os.path.splitext(img_path)[0] + '_preds_mask.tif'
-    src_dest_preds_img = os.path.splitext(img_path)[0] + '_preds_img.tif'
+    src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.{output_format}'
+    src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.{output_format}'
 
     rgb_labels = np.zeros((final_labels.shape[0], final_labels.shape[1], 3), dtype=np.uint8)
     rgb_labels[final_labels == 1] = 255
     if do_save:
         os.makedirs(os.path.dirname(src_dest_preds_mask), exist_ok=True)
-        Image.fromarray(final_labels).save(src_dest_preds_mask)
+        Image.fromarray(final_labels, mode='L').save(src_dest_preds_mask)
         if do_save_mask_as_img:
-            Image.fromarray(rgb_labels).save(src_dest_preds_img)
+            Image.fromarray(rgb_labels, mode="RGB").save(src_dest_preds_img)
     
     if do_show:
-        plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8)))
+        plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
 
     return final_labels, rgb_labels, final_prob
 
 
-def produce_with_lower_res(src_img, src_dest, res_frac, do_save=True, do_show=True):
+def produce_with_lower_res(src_img, src_dest, res_frac, output_format='png', do_save=True, do_show=True):
     img = Image.open(src_img)
     res_original = img.size
     low_res = tuple([int(x * res_frac) for x in res_original])
 
     img_low = img.resize((low_res), resample=Image.BILINEAR)
-    src_final = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res_frac}.tif')
+    src_final = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res_frac}.{output_format}')
     
     if do_save:
         img_low.save(src_final)
