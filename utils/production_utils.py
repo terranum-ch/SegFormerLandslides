@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from PIL import Image
 from itertools import product
 from time import time
+import tifffile as tiff
 
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
@@ -204,7 +205,7 @@ def predict_batch_array(
     return logits  # keep on GPU
 
 
-def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, output_format='png', do_show=True, do_save=True, do_save_mask_as_img=True):
+def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):
     if not isinstance(image, Image.Image):
         img_path = image
         image = Image.open(image)
@@ -225,7 +226,6 @@ def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512,
     batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
     initial_poses = []
 
-    # time_to_predict = 0
     for id_sample, (x,y) in enumerate(list_positions):
         x0 = min(x, W - tile_size)
         y0 = min(y, H - tile_size)
@@ -235,10 +235,8 @@ def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512,
 
         # Crop region (handles border tiles automatically)
         if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
-            # dt = time()
             logits = predict_batch_array(model, batch, model.device)
             probs = torch.softmax(logits, dim=1)[:, ]
-            # time_to_predict += time() - dt
 
             for i in range(len(initial_poses)):
                 xi, yi = initial_poses[i]
@@ -248,26 +246,21 @@ def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512,
             batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
             initial_poses = []
 
-    # print("TIME USED BY THE MODEL: ", time_to_predict)
-
-    # final_prob = torch.divide(prob_acc, torch.maximum(weight_acc, 1e-6))[0:H_original, 0:W_original].cpu().numpy()
     final_prob = torch.divide(prob_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
-    # full_prob = prob_acc / np.maximum(weight_acc, 1e-6)
-    # final_prob = torch.divide(prob_acc, )[0:H_original, 0:W_original].cpu().numpy()
     
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
 
-    src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.{output_format}'
-    src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.{output_format}'
+    src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.tif'
+    src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.tif'
 
     rgb_labels = np.zeros((final_labels.shape[0], final_labels.shape[1], 3), dtype=np.uint8)
     rgb_labels[final_labels == 1] = 255
     if do_save:
         os.makedirs(os.path.dirname(src_dest_preds_mask), exist_ok=True)
-        Image.fromarray(final_labels, mode='L').save(src_dest_preds_mask)
+        tiff.imwrite(src_dest_preds_mask, final_labels, compression="zstd", compressionargs={"level": 9})
         if do_save_mask_as_img:
-            Image.fromarray(rgb_labels, mode="RGB").save(src_dest_preds_img)
+            tiff.imwrite(src_dest_preds_img, rgb_labels, compression="zstd", compressionargs={"level": 9})
     
     if do_show:
         plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
@@ -275,16 +268,17 @@ def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512,
     return final_labels, rgb_labels, final_prob
 
 
-def produce_with_lower_res(src_img, src_dest, res_frac, output_format='png', do_save=True, do_show=True):
+def produce_with_lower_res(src_img, src_dest, res_frac, do_save=True, do_show=True):
     img = Image.open(src_img)
     res_original = img.size
     low_res = tuple([int(x * res_frac) for x in res_original])
 
     img_low = img.resize((low_res), resample=Image.BILINEAR)
-    src_final = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res_frac}.{output_format}')
+    src_final = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res_frac}.tif')
+    
     
     if do_save:
-        img_low.save(src_final)
+        tiff.imwrite(src_final, img_low, compression="zstd", compressionargs={"level": 9})
     if do_show:
         plt.imshow(img_low)
     
@@ -326,6 +320,7 @@ def geo_transfert(img_geo, img_target, same_file=True):
     })
 
     src_new_target = os.path.splitext(img_target)[0] +"_georef.tif" if not same_file else img_target
+
     with rasterio.open(src_new_target, "w", **pred_profile) as dst:
         dst.write(pred_data)
     return src_new_target

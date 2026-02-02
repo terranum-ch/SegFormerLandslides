@@ -129,12 +129,16 @@ def prediction(
         stride=256, 
         threshold_proba= 0.5, 
         threshold_grouping=0.5,
-        output_format='tif',):
+        do_save_inter=True,
+        do_save_mask=True,
+        do_save_img=True,
+        do_save_probas=True,
+        ):
     
     # predict at each resolution
     images = []
     preds = []
-    masks = []
+    masks = {}
     probas = []
 
     # load model
@@ -144,7 +148,6 @@ def prediction(
     model.to(DEVICE)
     model.eval()
 
-    # time0 = time()
     for res in resolutions:
         res_img, src_res_img = produce_with_lower_res(src_img, src_inter, res, do_show=False)
         pred_mask, preds_img, proba_img = predict_with_batch(
@@ -156,13 +159,15 @@ def prediction(
             stride=stride,
             th=threshold_proba, 
             do_show=False,
+            do_save=False,
+            do_save_mask_as_img=False,
             )
         images.append(res_img)
         preds.append(preds_img)
-        masks.append(pred_mask)
+        # masks.append(pred_mask)
+        masks[res] = pred_mask
         probas.append(proba_img)
-    # print("TIME FOR THE PREDICTION LOOP: ", time() - time0)
-    # time0 = time()
+
     # merge different resolutions into one final
     original_img = Image.open(src_img)
 
@@ -171,9 +176,13 @@ def prediction(
     #   _creation of final preds
     final_product = np.zeros((H, W), dtype=np.float32)
 
-    for mask in masks:
+    for res, mask in masks.items():
         rescaled_mask = Image.fromarray(mask).resize((W, H), Image.NEAREST)
         final_product += rescaled_mask
+
+        if do_save_inter:
+            src_dest_preds_mask = os.path.join(src_inter, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res}_preds_mask.tif')
+            tiff.imwrite(src_dest_preds_mask, rescaled_mask, compression="zstd", compressionargs={"level": 9})
 
     final_product /= len(masks)
     final_product[final_product >= threshold_grouping] = 1
@@ -185,91 +194,85 @@ def prediction(
 
     src_final_preds_mask = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
     src_final_preds_img = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
-
-    # Image.fromarray(final_product.astype(np.uint8), mode='L').save(src_final_preds_mask, compression='zstd')
-    # Image.fromarray(final_product_rgb.astype(np.uint8), mode='RGB').save(src_final_preds_img, compression='zstd')
-    tiff.imwrite(src_final_preds_mask, final_product.astype(np.uint8), compression="zstd", compressionargs={"level": 7})
-    tiff.imwrite(src_final_preds_img, final_product_rgb.astype(np.uint8), compression="zstd", compressionargs={"level": 7})
-
-    del final_product_rgb
-    del final_product
-
-    #   _creation of final probas
-    final_probas = np.zeros((W,H), dtype=np.float32)
-    # final_probas_rgb = np.zeros((W,H,4))
-
-    for proba in probas:
-        rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
-        final_probas += rescaled_proba
-
-    final_probas /= len(probas)
-    # final_probas_rgb = prob_to_rgb(final_probas)
-
-    final_probas = np.clip(final_probas, 0, 1)
-    final_probas = (final_probas * 255).astype(np.uint8)
-
     src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
-    # src_final_probas_mask_pickle = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.pickle')
-    # src_final_probas_img = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
 
-    # Image.fromarray(final_probas).save(src_final_probas_mask)
-    # Image.fromarray(probas_uint16, mode='I;16').save(os.path.splitext(src_final_probas_mask)[0] + '.png')
-    tiff.imwrite(src_final_probas_mask, final_probas, compression="zstd", compressionargs={"level": 7})
-    # with open(src_final_probas_mask_pickle, 'wb') as f:
-    #     pickle.dump(final_probas, f)
-
-    # Image.fromarray(final_probas_rgb.astype(np.uint8), mode='RGB').save(src_final_probas_img)
-    # print("TIME FOR THE REST: ", time() - time0)
-    return src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
+    if do_save_mask:
+        tiff.imwrite(src_final_preds_mask, final_product.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+    if do_save_img:
+        tiff.imwrite(src_final_preds_img, final_product_rgb.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
 
 
-def clustering(src_img, src_dest, eps, min_samples, min_cluster_size,  color_palette, output_format='png'):
+    if do_save_probas:
+        #   _creation of final probas
+        final_probas = np.zeros((W,H), dtype=np.float32)
+
+        for proba in probas:
+            rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
+            final_probas += rescaled_proba
+
+        final_probas /= len(probas)
+
+        final_probas = np.clip(final_probas, 0, 1)
+        final_probas = (final_probas * 255).astype(np.uint8)
+
+        tiff.imwrite(src_final_probas_mask, final_probas, compression="zstd", compressionargs={"level": 9})
+
+    return final_product, src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
+
+
+def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_palette, do_save_img=True):
     # extract coordinates of landslides
-    img_arr = np.array(Image.open(src_img))
     pos_ls = np.argwhere(img_arr)
 
     mask_clusters = np.zeros(img_arr.shape)
-    rgb_clusters = np.zeros((mask_clusters.shape[0], mask_clusters.shape[1], 4))
 
     if len(pos_ls) > 0:
         # create cluster map
-        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(pos_ls)
-        cluster_labels = clustering.labels_
-        lst_clusters = set(cluster_labels)
-
+        clustering = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=2).fit(pos_ls)
 
         # unpack coordinates
         rows = pos_ls[:, 0]
         cols = pos_ls[:, 1]
 
-        mask_clusters[rows, cols] = cluster_labels
-        mask_clusters[mask_clusters == -1] = 0
+        # remove noise
+        labels = clustering.labels_
+        valid = labels != -1
+        rows = rows[valid]
+        cols = cols[valid]
+        labels = labels[valid]
 
-        # saving clusters
-        distinct_colors_rgb8 = [(x, y, z, 255) for [x,y,z] in color_palette]
+        # count cluster sizes (FAST)
+        unique, counts = np.unique(labels, return_counts=True)
 
-        # for _, cluster in tqdm(enumerate(lst_clusters), total=len(lst_clusters)):
-        for cluster in lst_clusters:
-            if np.sum(mask_clusters == cluster) < min_cluster_size:
-                rgb_clusters[mask_clusters == cluster] = [255, 255, 255, 0]
-                mask_clusters[mask_clusters == cluster] = 0
-            else:
+        # find clusters to keep
+        keep_clusters = unique[counts >= min_cluster_size]
+
+        # mask of points to keep
+        keep_mask = np.isin(labels, keep_clusters)
+
+        # now write ONLY good points to image
+        mask_clusters[rows[keep_mask], cols[keep_mask]] = labels[keep_mask]
+
+        # saving image version
+        if do_save_img:
+            rgb_clusters = np.zeros((mask_clusters.shape[0], mask_clusters.shape[1], 4))
+            lst_clusters = set(keep_clusters)
+            distinct_colors_rgb8 = [(x, y, z, 255) for [x,y,z] in color_palette]
+
+            for cluster in lst_clusters:
                 id_color = cluster % len(distinct_colors_rgb8)
                 rgb_clusters[mask_clusters == cluster] = distinct_colors_rgb8[id_color]
 
-    # if np.sum(mask_clusters) == 0:
-    #     return
-    
-    # Background in white
-    rgb_clusters[mask_clusters == 0] = (255,255,255, 0)
 
     # save results
-    src_mask = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'clusters_eps_{eps}_min_samp_{min_samples}_mask.{output_format}')
-    src_img = os.path.join(src_dest, os.path.splitext(os.path.basename(src_img))[0] + f'clusters_eps_{eps}_min_samp_{min_samples}_img.{output_format}')
-    Image.fromarray(mask_clusters.astype(np.uint16), mode='I;16').save(src_mask)
-    Image.fromarray(rgb_clusters.astype(np.uint8), mode='RGB').save(src_img)
-    tiff.imwrite(src_mask, mask_clusters.astype(np.uint16), compression="zstd", compressionargs={"level": 7})
-    tiff.imwrite(src_img, rgb_clusters.astype(np.uint8), compression="zstd", compressionargs={"level": 7})
+    src_mask = os.path.splitext(src_dest)[0] + f'clusters_eps_{eps}_min_samp_{min_samples}_mask.tif'
+    src_img = os.path.splitext(src_dest)[0] + f'clusters_eps_{eps}_min_samp_{min_samples}_img.tif'
+    print(src_mask)
+    print(src_img)
+    if do_save_img:
+        tiff.imwrite(src_img, rgb_clusters.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+
+    tiff.imwrite(src_mask, mask_clusters.astype(np.uint16), compression="zstd", compressionargs={"level": 9})
 
     return src_mask, src_img
 
@@ -315,13 +318,17 @@ def production(args):
     DEST_PREDS = args.predictions.destination
     MODEL_DIR = args.predictions.model_dir
     BATCH_SIZE = args.predictions.batch_size
-    OUTPUT_FORMAT = args.predictions.output_format
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
     STRIDE = args.predictions.stride
     RESOLUTIONS = args.predictions.resolutions
-    DO_RM_INTERMED_FILES = args.predictions.do_rm_intermed_files
+    KEEP_INTERMED_FILES = args.to_keep.intermed
+    KEEP_MASK_BIN = args.to_keep.mask_bin
+    KEEP_MASK_IMG = args.to_keep.mask_img
+    KEEP_PROBAS = args.to_keep.probas
+    KEEP_CLUSTER_BIN = args.to_keep.cluster_bin
+    KEEP_CLUSTER_IMG = args.to_keep.cluster_img
 
     DEST_PREDS = DEST_ORIGINAL_TILES if DEST_PREDS.lower() == 'default' else DEST_PREDS
     dest_preds_dir = os.path.join(DEST_PREDS, 'predictions')
@@ -362,7 +369,7 @@ def production(args):
         # === PREDICTIONS =====
         # =====================
         # time_start = time()
-        src_pred_mask, src_pred_img, src_proba_mask = prediction(
+        pred_mask_arr, src_pred_mask, src_pred_img, src_proba_mask = prediction(
             src_img=src_img,
             src_inter=dest_inter_dir,
             src_dest_preds=dest_preds_dir, 
@@ -374,7 +381,6 @@ def production(args):
             stride=STRIDE,
             threshold_proba=THRESHOLD_PREDS, 
             threshold_grouping=THRESHOLD_GROUPING,
-            output_format=OUTPUT_FORMAT,
             )
         # print("TIME TO PREDICT: ", time() - time_start)
         # time_start = time()
@@ -388,33 +394,40 @@ def production(args):
         with open(SRC_COLOR_PALETTE, 'r') as f:
             color_palette = json.load(f)
 
-        res_clustering = clustering(
-            src_img=src_pred_mask,
-            src_dest=dest_clusters_dir,
+        src_clusters_mask, src_clusters_img = clustering(
+            img_arr=pred_mask_arr,
+            src_dest=os.path.join(dest_clusters_dir, os.path.basename(src_img)),
             eps= EPS, 
             min_samples=MIN_SAMPLES, 
             min_cluster_size=MIN_CLUSTER_SIZE,
             color_palette=color_palette,
-            output_format=OUTPUT_FORMAT,
+            do_save_img=KEEP_CLUSTER_IMG,
             )
-        
-        # test if no cluster found
-        if res_clustering == None or OUTPUT_FORMAT.lower() not in ['tif', 'tiff']:
-            continue
-        else:
-            src_clusters_mask, src_clusters_img = res_clustering
+
+        # georeference files
+        if KEEP_MASK_BIN:
             geo_transfert(src_img, src_pred_mask, True)
+        if KEEP_MASK_IMG:
             geo_transfert(src_img, src_pred_img, True)
+        if KEEP_PROBAS:
             geo_transfert(src_img, src_proba_mask, True)
-            # geo_transfert(src_img, src_proba_img, True)
+        if KEEP_CLUSTER_BIN:
             geo_transfert(src_img, src_clusters_mask, True)
+        if KEEP_CLUSTER_IMG:
             geo_transfert(src_img, src_clusters_img, True)
+        
+        if KEEP_INTERMED_FILES:
+            tile_name = os.path.splitext(os.path.basename(src_img))[0]
+            for src_inter in [os.path.join(dest_inter_dir, x) for x in os.listdir(dest_inter_dir) if tile_name in x]:
+                geo_transfert(src_img, src_inter)
 
-            vectorize(src_clusters_mask, dest_vectors_dir)
+        # vectorize if any cluster found
+        vectorize(src_clusters_mask, dest_vectors_dir)
 
-        # print("TIME TO VECTORIZE: ", time() - time_start)
-        # time_start = time()
-    if DO_RM_INTERMED_FILES:
+        if not KEEP_CLUSTER_BIN:
+            os.delete(src_clusters_mask)
+
+    if not KEEP_INTERMED_FILES:
         shutil.rmtree(dest_inter_dir)
 
     # Show duration of process
@@ -426,10 +439,6 @@ def production(args):
 
 
 if __name__ == "__main__":
-    # conf = OmegaConf.load('config/production.yaml')
-    # production(conf)
-
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="")
     args = parser.parse_args()
@@ -442,6 +451,5 @@ if __name__ == "__main__":
         print("- Producing from yaml file - ")
         args = OmegaConf.load('config/production.yaml')
 
-    # print(args)
     production(args)
 

@@ -20,3 +20,4 @@ einops
 omegaconf
 tifffile
 imagecodecs
+rasterio

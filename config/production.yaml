@@ -1,6 +1,6 @@
 downloader:
-  # destination: data/test_finetuning/with_multiple_versions/finetuning/test
-  destination: data/test_finetuning/with_multiple_versions/finetuning/originals
+  destination: data/test_finetuning/with_multiple_versions/finetuning/test
+  # destination: data/test_finetuning/with_multiple_versions/finetuning/originals
   dest_not_empty: replace # choose between 'add', 'stop', 'replace'
   skip_auto_downloading: True
   mode: year  # can be chosen between 'full', 'region', 'area' and 'year'
@@ -18,26 +18,29 @@ downloader:
     Nmax: 1169
   year: 2025  # which year if the mode is 'year'
 predictions:
-  # destination: default  # if Default, predict next to original
-  destination: data/test_finetuning/with_multiple_versions/finetuning/preds/stride=128_minsize=100_thpred=0.05_thgroup=0.05
+  destination: default  # if Default, predict next to original
+  # destination: data/test_finetuning/with_multiple_versions/finetuning/preds/stride=128_minsize=100_thpred=0.05_thgroup=0.05
   # model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   # model_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   model_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
   batch_size: 8
   output_format: tif  # choose between png, tif, jpg, bmp
-  threshold_preds: 0.05
-  threshold_grouping: 0.05
+  threshold_preds: 0.25
+  threshold_grouping: 0.5
   tile_size: 512
   stride: 128
   # resolutions: [1.0, 0.75, 0.5, 0.25, 0.1, 0.05]
-  resolutions: [0.1]
+  resolutions: [0.1, 0.5]
   # resolutions: [1.0]
-  do_rm_intermed_files: False
-  do_rm_masks: False
-  do_rm_imgs: True
 vectorization:
   dbscan_eps: 3
   dbscan_min_samples: 20
   min_cluster_size: 100
   src_color_palette: utils/resources/color_palet.json
-
+to_keep:
+  intermed: True
+  mask_bin: True
+  mask_img: True
+  probas: True
+  cluster_bin: True
+  cluster_img: True

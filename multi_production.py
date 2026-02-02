@@ -13,7 +13,8 @@ from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.cm as cm
 import pickle
 import tifffile as tiff
-
+import rasterio
+from utils.production_utils import geo_transfert
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 Image.MAX_IMAGE_PIXELS = None
@@ -31,7 +32,7 @@ def prob_to_rgb(prob_map, cmap_name="RdYlBu", range=[0,2**16-1]):
     cmapRB = cm.get_cmap(cmap_name)
     # print(np.min(prob_map))
     # print(np.max(prob_map))
-    prob_map = prob_map.astype(np.float32) / (2**16-1)
+    prob_map = prob_map.astype(np.float32) / 255
 
     colors_RB = [cmapRB(i) for i in np.linspace(0,1, 100)]
     cmap = LinearSegmentedColormap.from_list(cmap_name, colors_RB, N=10).reversed()
@@ -56,33 +57,47 @@ def postprocess(src_pred):
             os.path.join(src_pred, 'predictions', img),
             src_mask,
         )
-
-        img_arr = np.array(Image.open(src_mask))
+        with rasterio.open(src_mask) as src:
+            img_arr = np.transpose(np.astype(src.read(),np.uint8), (1,2,0))
+        # print(img_arr.shape)
+        # img_arr = np.array(Image.open(src_mask), dtype=np.uint8)
         img_arr_transparent = np.zeros((img_arr.shape[0], img_arr.shape[1], 4), dtype=np.uint8)
         img_arr_transparent[...,:3] = img_arr
         mask = img_arr[:,:,0] == 255
         img_arr_transparent[:,:,3][mask] = 255
         # Image.fromarray(img_arr_transparent).save(src_mask.replace('img', 'transparent'))
-        tiff.imwrite(src_mask.replace('img', 'transparent'), img_arr_transparent, compression="zstd", compressionargs={"level": 7})
-    
+        tiff.imwrite(src_mask.replace('img', 'transparent'), img_arr_transparent, compression="zstd", compressionargs={"level": 9})
+        geo_transfert(src_mask, src_mask.replace('img', 'transparent'), True)
+
     # process probas
     for img in [x for x in os.listdir(src_probas) if 'transparent' not in x]:
         src_proba = os.path.join(src_probas, img)
-        img_arr = np.array(Image.open(src_proba))
+        # img_arr = np.array(Image.open(src_proba))
+        
+        with rasterio.open(src_proba) as src:
+            img_arr = np.astype(src.read(),np.uint8)
+
+        img_arr = img_arr.reshape(img_arr.shape[1::])
+
         img_rgb = prob_to_rgb(img_arr)
         img_rgb_transparent = np.zeros((img_arr.shape[0], img_arr.shape[1], 4), dtype=np.uint8)
         img_rgb_transparent[..., :3] = img_rgb
-        img_rgb_transparent[..., 3] = 255
+        img_rgb_transparent[..., 3][img_arr >= 0.05 * 255] = 255
         # Image.fromarray(img_rgb_transparent).save(os.path.splitext(src_proba)[0] + f"_transparent{os.path.splitext(src_proba)[1]}")
-        tiff.imwrite(os.path.splitext(src_proba)[0] + f"_transparent{os.path.splitext(src_proba)[1]}", img_rgb_transparent, compression="zstd", compressionargs={"level": 7})
-    
+        src_img_transparent = os.path.splitext(src_proba)[0] + f"_transparent{os.path.splitext(src_proba)[1]}"
+        tiff.imwrite(src_img_transparent, img_rgb_transparent, compression="zstd", compressionargs={"level": 9})
+        geo_transfert(src_proba, src_img_transparent, True)
+
     # remove temporary files
     for el in os.listdir(src_pred):
-        if el not in ['masks','probas']:
+        if el not in ['masks','probas', 'vectors']:
             shutil.rmtree(os.path.join(src_pred, el))
 
 
 def multi_production(configs, args, verbose=False):
+    src_res_prod = "./results/production"
+    if os.path.exists(os.path.join(src_res_prod, 'problematic_confs.pickle')):
+        os.remove(os.path.join(src_res_prod, 'problematic_confs.pickle'))
     lst_conf_problematic = []
     for id_conf, conf in tqdm(enumerate(configs), total=len(configs)):
         args_temp = deepcopy(args)
@@ -106,12 +121,11 @@ def multi_production(configs, args, verbose=False):
         # )
         res = subprocess.run(
             [".venv/Scripts/python.exe", "production.py", f"--config={cfg_path}"],
-            # stdout=subprocess.DEVNULL,
-            # stderr=subprocess.STDOUT
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT
         )
-        # print(res.returncode)
+
         if res.returncode == 0:    # no error during production
-            continue
             args = OmegaConf.load(cfg_path)
             postprocess(args.predictions.destination)
         else:
@@ -119,11 +133,10 @@ def multi_production(configs, args, verbose=False):
             lst_conf_problematic.append(args)
         
         if len(lst_conf_problematic) > 0:
-            src_res_prod = "./results/production"
             os.makedirs(src_res_prod, exist_ok=True)
-            with open(os.path.join(src_res_prod, 'problematic_confs.pickle'), 'w+') as f:
+            with open(os.path.join(src_res_prod, 'problematic_confs.pickle'), 'wb') as f:
                 pickle.dump(lst_conf_problematic, f)
-        break
+        # break
         
         # print("\n----------------------------------------\n")
 
