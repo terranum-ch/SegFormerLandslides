@@ -5,8 +5,8 @@
 # dataset_dir: 'data/test_dem/dataset_with_dem'
 # dataset_dir: 'data/dataset_false_pos'
 # dataset_dir: 'data/dataset_Bern_v2_and_false_pos_0.5'
-# dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
-dataset_dir: data/dataset_playground_3000
+dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
+# dataset_dir: data/dataset_playground_3000
 trainset_dir: 'data/splitset_Bern_v2_training'
 valset_dir: 'data/splitset_Bern_v2_validation'
 mode: auto # choose auto for dataset or split for training and validation sets

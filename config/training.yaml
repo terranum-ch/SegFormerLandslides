@@ -1,21 +1,23 @@
 output_dir: "results/training"
-output_suffixe: test_playground_polygons
+output_suffixe: fusion_modulus
 # output_suffixe: test
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 50
+num_epochs: 20
 batch_size: 8
 num_workers: 2
 learning_rate: 5e-5
 weight_decay: 0.01
 
+is_trained: fusion_modulus  # choose between segmenter and fusion_modulus
+scales: [1.0, 0.75, 0.5, 0.25]
 from_pretrain: False
 pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
 resume_from_existing: False
 existing_dir: results/training/20260120_112049_50_epochs_Bern_v2_focal_dice_losses_with_1800_false_pos_from_scratch
 
 do_data_augmentation: True
-do_da_scaling: True
+do_da_scaling: False
 
 pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
 # save_preds_lbls: True

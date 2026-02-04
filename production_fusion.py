@@ -19,6 +19,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from utils.production_utils import download_tile, produce_with_lower_res, predict_with_batch, geo_transfert, load_latest_checkpoint
+from utils.trainer import MultiScaleSegformer
 
 from transformers import SegformerForSemanticSegmentation
 
@@ -335,7 +336,7 @@ def production(args):
     dest_clusters_dir = os.path.join(DEST_PREDS, 'clusters')
     dest_vectors_dir = os.path.join(DEST_PREDS, 'vectors')
     dest_originals_dir = os.path.join(DEST_PREDS, 'originals')
-    dest_inter_dir = os.path.join(DEST_PREDS, 'inter')
+    # dest_inter_dir = os.path.join(DEST_PREDS, 'inter')
 
     # === TILES DOWNLOADING ===
     # =========================
@@ -361,32 +362,68 @@ def production(args):
     os.makedirs(dest_probas_dir, exist_ok=True)
     os.makedirs(dest_clusters_dir, exist_ok=True)
     os.makedirs(dest_vectors_dir, exist_ok=True)
-    os.makedirs(dest_inter_dir, exist_ok=True)
-
+    # os.makedirs(dest_inter_dir, exist_ok=True)
+    # load model
+    ckpt_path = load_latest_checkpoint(MODEL_DIR)
+    model = MultiScaleSegformer.from_pretrained(ckpt_path)
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model.to(DEVICE)
+    model.eval()
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
-
         # === PREDICTIONS =====
         # =====================
-        # time_start = time()
-        pred_mask_arr, src_pred_mask, src_pred_img, src_proba_mask = prediction(
-            src_img=src_img,
-            src_inter=dest_inter_dir,
-            src_dest_preds=dest_preds_dir, 
-            src_dest_probas=dest_probas_dir,
-            resolutions=RESOLUTIONS, 
-            model_dir=MODEL_DIR, 
+        pred_mask, preds_img, proba_img = predict_with_batch(
+            image=src_img, 
+            model=model, 
             batch_size=BATCH_SIZE,
             tile_size=TILE_SIZE,
             stride=STRIDE,
-            threshold_proba=THRESHOLD_PREDS, 
-            threshold_grouping=THRESHOLD_GROUPING,
-            do_save_mask=KEEP_MASK_BIN,
-            do_save_img=KEEP_MASK_IMG,
-            do_save_inter=KEEP_INTERMED_FILES,
-            do_save_probas=KEEP_PROBAS,
+            th=THRESHOLD_PREDS, 
+            do_show=False,
+            do_save=False,
+            do_save_mask_as_img=False,
             )
-        # print("TIME TO PREDICT: ", time() - time_start)
-        # time_start = time()
+        
+        src_preds_mask = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
+        src_preds_img = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
+        src_probas_mask = os.path.join(dest_probas_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
+
+        if KEEP_MASK_BIN:
+            tiff.imwrite(src_preds_mask, pred_mask.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+        if KEEP_MASK_IMG:
+            tiff.imwrite(src_preds_img, preds_img.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+
+        if KEEP_PROBAS:
+            #   _creation of final probas
+            # final_probas = np.zeros((W,H), dtype=np.float32)
+
+            # for proba in probas:
+            #     rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
+            #     final_probas += rescaled_proba
+
+            # final_probas /= len(probas)
+
+            proba_img = (np.clip(proba_img, 0, 1) * 255).astype(np.uint8)
+
+            tiff.imwrite(src_probas_mask, proba_img, compression="zstd", compressionargs={"level": 9})
+
+        # pred_mask_arr, src_pred_mask, src_pred_img, src_proba_mask = prediction(
+        #     src_img=src_img,
+        #     src_inter=dest_inter_dir,
+        #     src_dest_preds=dest_preds_dir, 
+        #     src_dest_probas=dest_probas_dir,
+        #     resolutions=RESOLUTIONS, 
+        #     model_dir=MODEL_DIR, 
+        #     batch_size=BATCH_SIZE,
+        #     tile_size=TILE_SIZE,
+        #     stride=STRIDE,
+        #     threshold_proba=THRESHOLD_PREDS, 
+        #     threshold_grouping=THRESHOLD_GROUPING,
+        #     do_save_mask=KEEP_MASK_BIN,
+        #     do_save_img=KEEP_MASK_IMG,
+        #     do_save_inter=KEEP_INTERMED_FILES,
+        #     do_save_probas=KEEP_PROBAS,
+        #     )
 
         # === VECTORIZATION ===
         # =====================
@@ -398,7 +435,7 @@ def production(args):
             color_palette = json.load(f)
 
         src_clusters_mask, src_clusters_img = clustering(
-            img_arr=pred_mask_arr,
+            img_arr=pred_mask,
             src_dest=os.path.join(dest_clusters_dir, os.path.basename(src_img)),
             eps= EPS, 
             min_samples=MIN_SAMPLES, 
@@ -409,20 +446,20 @@ def production(args):
 
         # georeference files
         if KEEP_MASK_BIN:
-            geo_transfert(src_img, src_pred_mask, True)
+            geo_transfert(src_img, src_preds_mask, True)
         if KEEP_MASK_IMG:
-            geo_transfert(src_img, src_pred_img, True)
+            geo_transfert(src_img, src_preds_img, True)
         if KEEP_PROBAS:
-            geo_transfert(src_img, src_proba_mask, True)
+            geo_transfert(src_img, src_probas_mask, True)
         if KEEP_CLUSTER_BIN:
             geo_transfert(src_img, src_clusters_mask, True)
         if KEEP_CLUSTER_IMG:
             geo_transfert(src_img, src_clusters_img, True)
         
-        if KEEP_INTERMED_FILES:
-            tile_name = os.path.splitext(os.path.basename(src_img))[0]
-            for src_inter in [os.path.join(dest_inter_dir, x) for x in os.listdir(dest_inter_dir) if tile_name in x]:
-                geo_transfert(src_img, src_inter)
+        # if KEEP_INTERMED_FILES:
+        #     tile_name = os.path.splitext(os.path.basename(src_img))[0]
+        #     for src_inter in [os.path.join(dest_inter_dir, x) for x in os.listdir(dest_inter_dir) if tile_name in x]:
+        #         geo_transfert(src_img, src_inter)
 
         # vectorize if any cluster found
         vectorize(src_clusters_mask, dest_vectors_dir)
@@ -434,8 +471,8 @@ def production(args):
         # if not KEEP_PROBAS:
         #     os.remove(src_proba_mask)
 
-    if not KEEP_INTERMED_FILES:
-        shutil.rmtree(dest_inter_dir)
+    # if not KEEP_INTERMED_FILES:
+    #     shutil.rmtree(dest_inter_dir)
 
     # Show duration of process
     delta_time_loop = time() - start_time

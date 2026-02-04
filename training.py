@@ -8,6 +8,7 @@ from transformers import (
     AutoImageProcessor,
     SegformerForSemanticSegmentation,
     TrainingArguments,
+    SegformerConfig,
 )
 import albumentations as A
 import numpy as np
@@ -18,7 +19,7 @@ from datetime import datetime
 from omegaconf import OmegaConf
 
 from utils.dataset import SegmentationDataset
-from utils.trainer import TrainValMetricsTrainer, collate_with_filename
+from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleSegformer
 from utils.metrics import compute_metrics
 from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback
 from utils.visualization import show_iou_per_class, show_loss_pa, show_mean_iou_dice, show_confusion_matrix
@@ -54,6 +55,8 @@ def training(args):
     VALIDATION_SET_DIR = args.dataset.valset_dir
     DATASET_MODE = args.dataset.mode
 
+    IS_TRAINED = args.train.is_trained
+    SCALES = args.train.scales
     FROM_PRETRAIN = args.train.from_pretrain
     PRETRAIN_DIR = args.train.pretrain_dir
 
@@ -66,6 +69,8 @@ def training(args):
         raise AttributeError("PARAMETERS 'train.from_pretrain' and 'train.resume_from_existing' can not be both set to True!!!")
 
     DO_DATA_AUGMENTATION = args.train.do_data_augmentation
+
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Create architecture
     RESULTS_DIR = os.path.join(OUTPUT_DIR, datetime.now().strftime(r"%Y%m%d_%H%M%S_") + f"{NUM_EPOCHS}_epochs_" + OUTPUT_SUFFIXE)
@@ -87,14 +92,33 @@ def training(args):
     time_start = time()
 
     # Load model + processor
-    if FROM_PRETRAIN:
+    if FROM_PRETRAIN or IS_TRAINED == 'fusion_modulus':
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
     processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
-    model = SegformerForSemanticSegmentation.from_pretrained(
-        PRETRAINED_MODEL,
-        num_labels=2,
-        ignore_mismatched_sizes=True  # <- Important for custom classes
-    )
+    if IS_TRAINED == 'segmenter':
+        model = SegformerForSemanticSegmentation.from_pretrained(
+            PRETRAINED_MODEL,
+            num_labels=2,
+            ignore_mismatched_sizes=True  # <- Important for custom classes
+        )
+    elif IS_TRAINED == 'fusion_modulus':
+        # model = SegformerForSemanticSegmentation.from_pretrained(
+        #     PRETRAINED_MODEL,
+        #     num_labels=2,
+        #     ignore_mismatched_sizes=True  # <- Important for custom classes
+        # )
+        # model_seg = SegformerForSemanticSegmentation.from_pretrained(PRETRAINED_MODEL, ignore_mismatched_sizes=True)
+        # model_seg.to(DEVICE)
+        # model_seg.eval()
+        config = SegformerConfig.from_pretrained(PRETRAINED_MODEL)
+        config.scales = [float(s) for s in SCALES]
+
+        model = MultiScaleSegformer.from_pretrained(
+            PRETRAINED_MODEL,
+            config=config,
+        )
+    else:
+        raise AttributeError('"is_trained" NOT CORRECT in training.yaml')
 
     # Defining a transform for data augmentation
     if args.train.do_da_scaling:
@@ -102,14 +126,14 @@ def training(args):
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
-            A.Downscale((0.1, 1.0), p=1.0),
+            A.Downscale((0.25, 1.0), p=1.0),
         ])
     else:
         train_transform = A.Compose([
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
-            # A.Downscale((0.1, 1.0), p=1.0),
+            # A.Downscale((0.25, 1.0), p=1.0),
         ])
         
     if DATASET_MODE == 'auto':
@@ -151,7 +175,7 @@ def training(args):
             transform=None
         )
     else:
-        raise AttributeError("DATASET MODE NOT CORRECT in dataset.yaml")
+        raise AttributeError('"dataset_mode" NOT CORRECT in dataset.yaml')
 
     if DO_DATA_AUGMENTATION:
         if isinstance(train_subset, Subset):

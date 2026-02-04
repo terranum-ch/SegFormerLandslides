@@ -1,0 +1,29 @@
+from omegaconf import OmegaConf
+from copy import deepcopy
+import subprocess
+import tempfile
+
+def train_both(conf):
+    print(OmegaConf.to_yaml(conf))
+    pass
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="")
+    args = parser.parse_args()
+    cfg_path = args.config
+
+    print(cfg_path)
+
+    if cfg_path != "":
+        print("- Training from argument - ")
+        args = OmegaConf.load(cfg_path)
+    else:
+        print("- Training from yaml file - ")
+        conf_train = OmegaConf.load('./config/training.yaml')
+        conf_dataset = OmegaConf.load('./config/dataset.yaml')
+
+        args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+
+    train_both(args)
