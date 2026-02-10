@@ -120,7 +120,7 @@ def multi_production(configs, args, verbose=False):
         #     stderr=None,
         # )
         res = subprocess.run(
-            [".venv/Scripts/python.exe", "production.py", f"--config={cfg_path}"],
+            [".venv/Scripts/python.exe", "production_fusion.py", f"--config={cfg_path}"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT
         )
@@ -145,24 +145,24 @@ if __name__ == "__main__":
     src_dest = "data/test_finetuning/with_multiple_versions/finetuning/preds"
     os.makedirs(src_dest, exist_ok=True)
     list_th_preds = [0.05, 0.1, 0.3, 0.5, 0.7]
-    list_th_group = [0.05, 0.1, 0.3, 0.5, 0.7]
+    # list_th_group = [0.05, 0.1, 0.3, 0.5, 0.7]
     list_stride = [128, 256, 512]
-    list_min_cluster_size = [100, 1000, 5000]
+    list_min_cluster_size = [100, 1000, 5000, 10000]
 
 
     configs = []
 
-    for config in product(list_th_preds, list_th_group, list_stride, list_min_cluster_size):
-        th_pred, th_group, stride, min_cluster_size = config
+    for config in product(list_th_preds, list_stride, list_min_cluster_size):
+        th_pred, stride, min_cluster_size = config
 
-        suffixe = f"stride={stride}_minsize={min_cluster_size}_thpred={th_pred}_thgroup={th_group}"
+        suffixe = f"stride={stride}_minsize={min_cluster_size}_thpred={th_pred}"
 
         os.makedirs(os.path.join(src_dest, suffixe), exist_ok=True)
 
         config = {
             "predictions.destination": os.path.join(src_dest, suffixe),
             "predictions.threshold_preds": th_pred,
-            "predictions.threshold_grouping": th_group,
+            # "predictions.threshold_grouping": th_group,
             "predictions.stride": stride,
             "vectorization.min_cluster_size": min_cluster_size,
         }

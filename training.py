@@ -19,6 +19,7 @@ from datetime import datetime
 from omegaconf import OmegaConf
 
 from utils.dataset import SegmentationDataset
+from utils.dataset_fusion import SegFusionDataset, DatasetProxy
 from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleSegformer
 from utils.metrics import compute_metrics
 from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback
@@ -50,18 +51,22 @@ def training(args):
     LEARNING_RATE = args.train.learning_rate
     WEIGHT_DECAY = args.train.weight_decay
     PRETRAINED_MODEL = args.train.pretrained_model
-    DATASET_DIR = args.dataset.dataset_dir
-    TRAINING_SET_DIR = args.dataset.trainset_dir
-    VALIDATION_SET_DIR = args.dataset.valset_dir
-    DATASET_MODE = args.dataset.mode
-
     IS_TRAINED = args.train.is_trained
+    
     SCALES = args.train.scales
     FROM_PRETRAIN = args.train.from_pretrain
     PRETRAIN_DIR = args.train.pretrain_dir
 
     RESUME_FROM_EXISTING = args.train.resume_from_existing
     EXISTING_DIR_TO_RESUME_FROM = os.path.join(args.train.existing_dir, 'last_checkpoint') if RESUME_FROM_EXISTING else None
+
+    DATASET_DIR_SEG = args.segmenter.dataset.dataset_dir
+    TRAINING_SET_DIR = args.dataset.segmenter.trainset_dir
+    VALIDATION_SET_DIR = args.dataset.segmenter.valset_dir
+    DATASET_MODE = args.dataset.segmenter.mode
+    DATASET_DIR_FUS = args.dataset.fusion.dataset_dir
+
+    DATASET_DIR = DATASET_DIR_SEG if IS_TRAINED == 'segmenter' else DATASET_DIR_FUS
 
     try:
         assert FROM_PRETRAIN + RESUME_FROM_EXISTING < 2
@@ -92,7 +97,7 @@ def training(args):
     time_start = time()
 
     # Load model + processor
-    if FROM_PRETRAIN or IS_TRAINED == 'fusion_modulus':
+    if FROM_PRETRAIN or IS_TRAINED == 'fusion':
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
     processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
     if IS_TRAINED == 'segmenter':
@@ -101,15 +106,7 @@ def training(args):
             num_labels=2,
             ignore_mismatched_sizes=True  # <- Important for custom classes
         )
-    elif IS_TRAINED == 'fusion_modulus':
-        # model = SegformerForSemanticSegmentation.from_pretrained(
-        #     PRETRAINED_MODEL,
-        #     num_labels=2,
-        #     ignore_mismatched_sizes=True  # <- Important for custom classes
-        # )
-        # model_seg = SegformerForSemanticSegmentation.from_pretrained(PRETRAINED_MODEL, ignore_mismatched_sizes=True)
-        # model_seg.to(DEVICE)
-        # model_seg.eval()
+    elif IS_TRAINED == 'fusion':
         config = SegformerConfig.from_pretrained(PRETRAINED_MODEL)
         config.scales = [float(s) for s in SCALES]
 
@@ -121,34 +118,42 @@ def training(args):
         raise AttributeError('"is_trained" NOT CORRECT in training.yaml')
 
     # Defining a transform for data augmentation
+    list_transforms = [A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5), A.RandomRotate90(p=0.5)]
     if args.train.do_da_scaling:
-        train_transform = A.Compose([
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            A.Downscale((0.25, 1.0), p=1.0),
-        ])
-    else:
-        train_transform = A.Compose([
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            # A.Downscale((0.25, 1.0), p=1.0),
-        ])
+        list_transforms.append(A.Downscale((0.25, 1.0), p=1.0))
+    train_transform = A.compose(list_transforms)
+    # if args.train.do_da_scaling:
+    #     train_transform = A.Compose([
+    #         A.HorizontalFlip(p=0.5),
+    #         A.VerticalFlip(p=0.5),
+    #         A.RandomRotate90(p=0.5),
+    #         A.Downscale((0.25, 1.0), p=1.0),
+    #     ])
+    # else:
+    #     train_transform = A.Compose([
+    #         A.HorizontalFlip(p=0.5),
+    #         A.VerticalFlip(p=0.5),
+    #         A.RandomRotate90(p=0.5),
+    #         # A.Downscale((0.25, 1.0), p=1.0),
+    #     ])
         
     if DATASET_MODE == 'auto':
-        full_dataset_train = SegmentationDataset(
+        full_dataset_train = DatasetProxy(
+            mode=IS_TRAINED,
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             processor=processor,
-            transform=None
+            transform=None,
+            scales=SCALES,
         )
 
-        full_dataset_val = SegmentationDataset(
+        full_dataset_val = DatasetProxy(
+            mode=IS_TRAINED,
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             processor=processor,
-            transform=None
+            transform=None,
+            scales=SCALES,
         )
 
         split_idx = int(len(full_dataset_train) * (1 - VAL_SPLIT))
@@ -162,17 +167,21 @@ def training(args):
         train_subset = Subset(full_dataset_train, train_indices.indices)
         val_subset   = Subset(full_dataset_val, val_indices.indices)
     elif DATASET_MODE == 'split':
-        train_subset = SegmentationDataset(
+        train_subset = DatasetProxy(
+            mode=IS_TRAINED,
             image_dir=os.path.join(TRAINING_SET_DIR, "images"),
             mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
-            transform=None
+            transform=None,
+            scales=SCALES,
         )
-        val_subset = SegmentationDataset(
+        val_subset = DatasetProxy(
+            mode=IS_TRAINED,
             image_dir=os.path.join(VALIDATION_SET_DIR, "images"),
             mask_dir=os.path.join(VALIDATION_SET_DIR, "masks"),
             processor=processor,
-            transform=None
+            transform=None,
+            scales=SCALES,
         )
     else:
         raise AttributeError('"dataset_mode" NOT CORRECT in dataset.yaml')

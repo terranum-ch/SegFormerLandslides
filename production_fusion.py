@@ -18,7 +18,7 @@ import tifffile as tiff
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from utils.production_utils import download_tile, produce_with_lower_res, predict_with_batch, geo_transfert, load_latest_checkpoint
+from utils.production_utils import download_tile, produce_with_lower_res, predict_with_batch_fusion, geo_transfert, load_latest_checkpoint
 from utils.trainer import MultiScaleSegformer
 
 from transformers import SegformerForSemanticSegmentation
@@ -322,7 +322,7 @@ def production(args):
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
     STRIDE = args.predictions.stride
-    RESOLUTIONS = args.predictions.resolutions
+    SCALES = args.predictions.scales
     KEEP_INTERMED_FILES = args.to_keep.intermed
     KEEP_MASK_BIN = args.to_keep.mask_bin
     KEEP_MASK_IMG = args.to_keep.mask_img
@@ -372,13 +372,14 @@ def production(args):
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
         # === PREDICTIONS =====
         # =====================
-        pred_mask, preds_img, proba_img = predict_with_batch(
+        pred_mask, preds_img, proba_img = predict_with_batch_fusion(
             image=src_img, 
             model=model, 
             batch_size=BATCH_SIZE,
-            tile_size=TILE_SIZE,
+            tile_size=2048,
             stride=STRIDE,
             th=THRESHOLD_PREDS, 
+            scales=SCALES,
             do_show=False,
             do_save=False,
             do_save_mask_as_img=False,

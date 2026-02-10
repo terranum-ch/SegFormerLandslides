@@ -446,69 +446,163 @@ class ScaleAttention(nn.Module):
         return fused, weights
 
 
+# class MultiScaleSegformer(SegformerPreTrainedModel):
+#     def __init__(self, config):
+#         super().__init__(config)
+
+#         # === Original SegFormer ===
+#         self.segformer = SegformerModel(config)
+#         self.decode_head = SegformerDecodeHead(config)
+
+#         # Freeze everything
+#         for p in self.segformer.parameters():
+#             p.requires_grad = False
+#         for p in self.decode_head.parameters():
+#             p.requires_grad = False
+
+#         # === Multi-scale fusion ===
+#         self.scales = [float(s) for s in config.scales]
+#         self.n_scales = len(config.scales)
+#         self.n_classes = config.num_labels
+#         self.fusion = ScaleAttention(self.n_scales, self.n_classes)
+
+#         self.post_init()
+
+#     def forward(
+#         self,
+#         pixel_values: torch.FloatTensor,
+#         labels: torch.LongTensor = None,
+#         output_attentions=None,
+#         output_hidden_states=None,
+#         return_dict=None,
+#     ):
+
+#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+#         B, C, H, W = pixel_values.shape
+#         logits_per_scale = []
+
+#         # === Run frozen SegFormer at multiple scales ===
+#         for s in self.scales:
+#             xs = F.interpolate(pixel_values, scale_factor=s, mode="bilinear", align_corners=False)
+
+#             with torch.no_grad():
+#                 outputs = self.segformer(
+#                     xs,
+#                     output_hidden_states=True,
+#                     return_dict=True,
+#                 )
+#                 encoder_hidden_states = outputs.hidden_states
+#                 logits = self.decode_head(encoder_hidden_states)
+
+#             logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+#             logits_per_scale.append(logits)
+
+#         # === Stack and fuse ===
+#         stacked = torch.cat(logits_per_scale, dim=1)  # [B, K*C, H, W]
+#         fused_logits, weights = self.fusion(stacked)  # [B, C, H, W]
+
+#         logits = F.interpolate(
+#             fused_logits,
+#             scale_factor=0.25,
+#             mode="bilinear",
+#             align_corners=False
+#         )
+        
+#         loss = None
+#         if labels is not None:
+#             upsampled_logits = F.interpolate(
+#                 logits,
+#                 size=labels.shape[-2:],
+#                 mode="bilinear",
+#                 align_corners=False
+#             )
+#             if self.config.num_labels > 1:
+#                 loss_fct = CrossEntropyLoss(ignore_index=self.config.semantic_loss_ignore_index)
+#                 loss = loss_fct(fused_logits, labels)
+#             else:
+#                 valid_mask = ((labels >= 0) & (labels != self.config.semantic_loss_ignore_index)).float()
+#                 loss_fct = BCEWithLogitsLoss(reduction="none")
+#                 loss = loss_fct(fused_logits.squeeze(1), labels.float())
+#                 loss = (loss * valid_mask).mean()
+#         if not return_dict:
+#             output = (logits,)
+#             return ((loss,) + output) if loss is not None else output
+
+#         return SemanticSegmenterOutput(
+#             loss=loss,
+#             logits=logits,
+#             hidden_states=None,
+#             attentions=None,
+#         )
+        
+
 class MultiScaleSegformer(SegformerPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        # === Original SegFormer ===
         self.segformer = SegformerModel(config)
         self.decode_head = SegformerDecodeHead(config)
 
-        # Freeze everything
+        # Freeze backbone
         for p in self.segformer.parameters():
             p.requires_grad = False
         for p in self.decode_head.parameters():
             p.requires_grad = False
 
-        # === Multi-scale fusion ===
         self.scales = [float(s) for s in config.scales]
-        self.n_scales = len(config.scales)
+        self.n_scales = len(self.scales)
         self.n_classes = config.num_labels
+
         self.fusion = ScaleAttention(self.n_scales, self.n_classes)
 
         self.post_init()
 
     def forward(
         self,
-        pixel_values: torch.FloatTensor,
-        labels: torch.LongTensor = None,
-        output_attentions=None,
-        output_hidden_states=None,
+        pixel_values=None,          # unused but required by Trainer
+        multspec_img=None,         # [B, K, C, 512, 512]
+        labels=None,
+        filename=None,
         return_dict=None,
+        **kwargs
     ):
-
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        B, C, H, W = pixel_values.shape
+        B, K, H, W, C = multspec_img.shape
         logits_per_scale = []
 
-        # === Run frozen SegFormer at multiple scales ===
-        for s in self.scales:
-            xs = F.interpolate(pixel_values, scale_factor=s, mode="bilinear", align_corners=False)
+        # === Run SegFormer on each provided scale ===
+        for k in range(K):
+            xk = multspec_img[:, k]  # [B, C, 512, 512]
+            xk = torch.moveaxis(xk, 3, 1)
 
             with torch.no_grad():
                 outputs = self.segformer(
-                    xs,
+                    xk,
                     output_hidden_states=True,
                     return_dict=True,
                 )
-                encoder_hidden_states = outputs.hidden_states
-                logits = self.decode_head(encoder_hidden_states)
+                logits_k = self.decode_head(outputs.hidden_states)
 
-            logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
-            logits_per_scale.append(logits)
+            logits_k = F.interpolate(
+                logits_k, size=(H, W), mode="bilinear", align_corners=False
+            )
 
-        # === Stack and fuse ===
+            logits_per_scale.append(logits_k)
+
+        # === Fuse ===
         stacked = torch.cat(logits_per_scale, dim=1)  # [B, K*C, H, W]
         fused_logits, weights = self.fusion(stacked)  # [B, C, H, W]
 
+        # SegFormer outputs at 1/4 res
         logits = F.interpolate(
             fused_logits,
             scale_factor=0.25,
             mode="bilinear",
             align_corners=False
         )
-        
+
         loss = None
         if labels is not None:
             upsampled_logits = F.interpolate(
@@ -517,17 +611,21 @@ class MultiScaleSegformer(SegformerPreTrainedModel):
                 mode="bilinear",
                 align_corners=False
             )
+
             if self.config.num_labels > 1:
-                loss_fct = CrossEntropyLoss(ignore_index=self.config.semantic_loss_ignore_index)
-                loss = loss_fct(fused_logits, labels)
+                loss_fct = CrossEntropyLoss(
+                    ignore_index=self.config.semantic_loss_ignore_index
+                )
+                loss = loss_fct(upsampled_logits, labels)
             else:
-                valid_mask = ((labels >= 0) & (labels != self.config.semantic_loss_ignore_index)).float()
+                valid_mask = ((labels >= 0) &
+                              (labels != self.config.semantic_loss_ignore_index)).float()
                 loss_fct = BCEWithLogitsLoss(reduction="none")
-                loss = loss_fct(fused_logits.squeeze(1), labels.float())
+                loss = loss_fct(upsampled_logits.squeeze(1), labels.float())
                 loss = (loss * valid_mask).mean()
+
         if not return_dict:
-            output = (logits,)
-            return ((loss,) + output) if loss is not None else output
+            return ((loss, logits) if loss is not None else (logits,))
 
         return SemanticSegmenterOutput(
             loss=loss,
@@ -535,7 +633,7 @@ class MultiScaleSegformer(SegformerPreTrainedModel):
             hidden_states=None,
             attentions=None,
         )
-        
+
 
 if __name__ == "__main__":
     print("WRONG SCRIPT PAL")
