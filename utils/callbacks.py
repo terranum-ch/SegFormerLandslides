@@ -120,3 +120,55 @@ class SavesCurrentStateCallback(TrainerCallback):
         torch.save(self.trainer.accelerator.scaler.state_dict(), os.path.join(self.checkpoint_dir, "scaler.pt"))
         torch.save(self.trainer.lr_scheduler.state_dict(), os.path.join(self.checkpoint_dir, "scheduler.pt"))
 
+
+class TrainMetricsCallback(TrainerCallback):
+    """
+    Collect logits and labels during training without interfering with
+    HuggingFace training_step, AMP, DDP, or compute_loss.
+
+    Computes metrics on-the-fly for monitoring only.
+    """
+
+    def __init__(self, trainer, compute_metrics_fn):
+        self.trainer = trainer
+        self.compute_metrics = compute_metrics_fn
+        self.reset_buffers()
+
+    def reset_buffers(self):
+        self.preds = []
+        self.labels = []
+
+    def on_step_end(self, args, state, control, **kwargs):
+        # trainer = kwargs["trainer"]
+
+        # HF stores last model outputs here
+        if not hasattr(self.trainer, "_last_outputs"):
+            return
+
+        outputs = self.trainer._last_outputs
+        inputs = self.trainer._last_inputs
+
+        if outputs is None or inputs is None:
+            return
+
+        logits = outputs.logits.detach().cpu()
+        labels = inputs["labels"].detach().cpu()
+
+        self.preds.append(logits)
+        self.labels.append(labels)
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if len(self.preds) == 0:
+            return
+
+        preds = torch.cat(self.preds).numpy()
+        labels = torch.cat(self.labels).numpy()
+
+        metrics = self.compute_metrics({
+            "predictions": preds,
+            "label_ids": labels
+        })
+
+        print(f"\n🟢 Training metrics at epoch {state.epoch:.1f}: {metrics}\n")
+
+        self.reset_buffers()

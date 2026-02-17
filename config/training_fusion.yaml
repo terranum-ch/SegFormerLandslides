@@ -1,0 +1,4 @@
+segmenter:
+  num_epochs: 50
+fusion:
+  num_epochs: 20

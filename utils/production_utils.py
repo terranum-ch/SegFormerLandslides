@@ -186,7 +186,7 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
     return final_labels, rgb_labels, final_prob
 
 
-def predict_batch_array(
+def predict_batch_array_fusion(
     model,
     batch,
     device="cuda",
@@ -215,8 +215,49 @@ def predict_batch_array(
     batch = (batch - mean) / std
 
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
-        input = {'multspec_img': batch}
-        logits = model(**input).logits  # (B,C,h,w)
+        input = {'multspec_img': batch, 'return_weights': True}
+        logits, weights = model(**input)  # (B,C,h,w)
+
+        logits = F.interpolate(
+            logits.logits,
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False
+        )
+
+    return logits, weights  # keep on GPU
+
+
+def predict_batch_array(
+    model,
+    batch,
+    device="cuda",
+):
+    """
+    Parameters
+    ----------
+    batch_images : np.ndarray
+        Shape (B, H, W, 3), RGB images in RAM
+
+    Returns
+    -------
+    pred_masks : np.ndarray
+        Shape (B, H, W)
+    upsampled_logits : torch.Tensor
+        Shape (B, C, H, W) on CPU
+    """
+
+    assert batch.ndim == 4 and batch.shape[-1] == 3
+
+    _, H, W, _ = batch.shape
+    batch = batch.permute(0, 3, 1, 2)                  # (B, 3, H, W)
+    batch = batch.float() / 255.0
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,3,1,1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,3,1,1)
+    batch = (batch - mean) / std
+
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        logits = model(batch).logits  # (B,C,h,w)
 
         logits = F.interpolate(
             logits,
@@ -241,6 +282,7 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
     # prepare arrays
     prob_acc = torch.zeros((H,W), device=model.device)
     weight_acc = torch.zeros((H,W), device=model.device)
+    weights_fusion_acc = torch.zeros((4,H,W), device=model.device)
 
     list_xpos = range(0, W - tile_size + 1, stride)
     list_ypos = range(0, H - tile_size + 1, stride)
@@ -272,13 +314,14 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
 
         # Crop region (handles border tiles automatically)
         if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
-            logits = predict_batch_array(model, batch, model.device)
+            logits, weights_fusion = predict_batch_array_fusion(model, batch, model.device)
             probs = torch.softmax(logits, dim=1)[:, ]
 
             for i in range(len(initial_poses)):
                 xi, yi = initial_poses[i]
                 prob_acc[yi:yi+signal_cardinality, xi:xi+signal_cardinality] += probs[i, 1, ...].reshape((signal_cardinality, signal_cardinality))
                 weight_acc[yi:yi+signal_cardinality, xi:xi+signal_cardinality] += 1
+                weights_fusion_acc[:, yi:yi+signal_cardinality, xi:xi+signal_cardinality] += weights_fusion[i, :].reshape((4, signal_cardinality, signal_cardinality))
 
             batch = torch.zeros((batch_size, len(scales), signal_cardinality, signal_cardinality, 3), device=model.device)
             initial_poses = []
@@ -287,6 +330,8 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
     
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
+
+    final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
 
     src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.tif'
     src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.tif'
@@ -302,7 +347,7 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
     if do_show:
         plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
 
-    return final_labels, rgb_labels, final_prob
+    return final_labels, rgb_labels, final_prob, final_weights_fusion_acc
 
 
 def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):

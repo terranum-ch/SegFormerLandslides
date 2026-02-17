@@ -1,11 +1,12 @@
 output_dir: "results/training"
-output_suffixe: fusion_modulus
+# output_suffixe: fusion_modulus_dice_focal_loss
+output_suffixe: test
 # output_suffixe: test
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 20
-batch_size: 8
-num_workers: 2
+num_epochs: 2
+batch_size: 4
+num_workers: 4
 learning_rate: 5e-5
 weight_decay: 0.01
 
@@ -13,12 +14,14 @@ is_trained: fusion  # choose between segmenter and fusion
 scales: [1.0, 0.75, 0.5, 0.25]
 from_pretrain: False
 # pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
-pretrain_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
+# pretrain_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
+pretrain_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
 resume_from_existing: False
 existing_dir: results/training/20260120_112049_50_epochs_Bern_v2_focal_dice_losses_with_1800_false_pos_from_scratch
 
 do_data_augmentation: True
 do_da_scaling: False
+do_save_best_preds: False
 
 pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
 # save_preds_lbls: True

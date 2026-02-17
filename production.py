@@ -21,6 +21,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from utils.production_utils import download_tile, produce_with_lower_res, predict_with_batch, geo_transfert, load_latest_checkpoint
 
 from transformers import SegformerForSemanticSegmentation
+from utils.trainer import MultiScaleFusionModel
 
 # Clearing warnings
 Image.MAX_IMAGE_PIXELS = None
@@ -142,6 +143,7 @@ def prediction(
 
     # load model
     ckpt_path = load_latest_checkpoint(model_dir)
+    model = MultiScaleFusionModel.from_pretrained(ckpt_path)
     model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.to(DEVICE)
@@ -315,13 +317,14 @@ def production(args):
     AREA = args.downloader.area
     YEAR = args.downloader.year
     DEST_PREDS = args.predictions.destination
-    MODEL_DIR = args.predictions.model_dir
+    MODEL_SEG_DIR = args.predictions.model_seg_dir
+    MODEL_FUSION_DIR = args.predictions.model_fusion_dir
     BATCH_SIZE = args.predictions.batch_size
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
     STRIDE = args.predictions.stride
-    RESOLUTIONS = args.predictions.resolutions
+    RESOLUTIONS = args.predictions.scales
     KEEP_INTERMED_FILES = args.to_keep.intermed
     KEEP_MASK_BIN = args.to_keep.mask_bin
     KEEP_MASK_IMG = args.to_keep.mask_img
@@ -374,7 +377,7 @@ def production(args):
             src_dest_preds=dest_preds_dir, 
             src_dest_probas=dest_probas_dir,
             resolutions=RESOLUTIONS, 
-            model_dir=MODEL_DIR, 
+            model_dir=MODEL_FUSION_DIR, 
             batch_size=BATCH_SIZE,
             tile_size=TILE_SIZE,
             stride=STRIDE,

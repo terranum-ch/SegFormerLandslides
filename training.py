@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 import json
 import argparse
 import torch
@@ -20,19 +21,32 @@ from omegaconf import OmegaConf
 
 from utils.dataset import SegmentationDataset
 from utils.dataset_fusion import SegFusionDataset, DatasetProxy
-from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleSegformer
+from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleFusionModel
 from utils.metrics import compute_metrics
-from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback
+from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback, TrainMetricsCallback
 from utils.visualization import show_iou_per_class, show_loss_pa, show_mean_iou_dice, show_confusion_matrix
+
+import logging
+from contextlib import contextmanager
+import warnings
+from rasterio.errors import NotGeoreferencedWarning
 
 # If batch size too big, fails instead of slowing down
 torch.cuda.set_per_process_memory_fraction(0.95)
+warnings.filterwarnings('ignore', category=NotGeoreferencedWarning)
+
+@contextmanager
+def mute_logging(level=logging.CRITICAL):
+    previous_level = logging.root.manager.disable
+    logging.disable(level)
+    try:
+        yield
+    finally:
+        logging.disable(previous_level)
+
 
 def get_best_checkpoint(training_dir):
-    print(training_dir)
-    print(os.listdir(training_dir))
     lst_checkpoints = [x for x in os.listdir(training_dir) if 'checkpoint' in x and not 'last' in x and os.path.isdir(os.path.join(training_dir, x))]
-    print(lst_checkpoints)
 
     lst_steps = [int(x.split('-')[-1]) for x in lst_checkpoints]
     best_step = np.max(lst_steps)
@@ -60,7 +74,7 @@ def training(args):
     RESUME_FROM_EXISTING = args.train.resume_from_existing
     EXISTING_DIR_TO_RESUME_FROM = os.path.join(args.train.existing_dir, 'last_checkpoint') if RESUME_FROM_EXISTING else None
 
-    DATASET_DIR_SEG = args.segmenter.dataset.dataset_dir
+    DATASET_DIR_SEG = args.dataset.segmenter.dataset_dir
     TRAINING_SET_DIR = args.dataset.segmenter.trainset_dir
     VALIDATION_SET_DIR = args.dataset.segmenter.valset_dir
     DATASET_MODE = args.dataset.segmenter.mode
@@ -74,11 +88,12 @@ def training(args):
         raise AttributeError("PARAMETERS 'train.from_pretrain' and 'train.resume_from_existing' can not be both set to True!!!")
 
     DO_DATA_AUGMENTATION = args.train.do_data_augmentation
+    DO_SAVE_BEST_PREDS = args.train.do_save_best_preds
 
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Create architecture
-    RESULTS_DIR = os.path.join(OUTPUT_DIR, datetime.now().strftime(r"%Y%m%d_%H%M%S_") + f"{NUM_EPOCHS}_epochs_" + OUTPUT_SUFFIXE)
+    RESULTS_DIR = os.path.join(OUTPUT_DIR, datetime.now().strftime(r"%Y%m%d_%H%M%S_") + f'{IS_TRAINED}_' + f"{NUM_EPOCHS}_epochs_" + OUTPUT_SUFFIXE)
     LOG_DIR = os.path.join(RESULTS_DIR, 'logs')
     CONFMAT_DIR = os.path.join(LOG_DIR, "confmats")
     BESTPREDS_DIR = os.path.join(LOG_DIR, "best_preds")
@@ -99,20 +114,23 @@ def training(args):
     # Load model + processor
     if FROM_PRETRAIN or IS_TRAINED == 'fusion':
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
-    processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True)
-    if IS_TRAINED == 'segmenter':
-        model = SegformerForSemanticSegmentation.from_pretrained(
+    with mute_logging():
+        processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True) if IS_TRAINED == 'segmenter' else None
+    
+    segformer = SegformerForSemanticSegmentation.from_pretrained(
             PRETRAINED_MODEL,
             num_labels=2,
             ignore_mismatched_sizes=True  # <- Important for custom classes
         )
+    if IS_TRAINED == 'segmenter':
+        model = segformer
     elif IS_TRAINED == 'fusion':
         config = SegformerConfig.from_pretrained(PRETRAINED_MODEL)
         config.scales = [float(s) for s in SCALES]
-
-        model = MultiScaleSegformer.from_pretrained(
-            PRETRAINED_MODEL,
-            config=config,
+        
+        model = MultiScaleFusionModel(
+            segformer=segformer,
+            scales=[float(s) for s in SCALES],
         )
     else:
         raise AttributeError('"is_trained" NOT CORRECT in training.yaml')
@@ -121,22 +139,8 @@ def training(args):
     list_transforms = [A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5), A.RandomRotate90(p=0.5)]
     if args.train.do_da_scaling:
         list_transforms.append(A.Downscale((0.25, 1.0), p=1.0))
-    train_transform = A.compose(list_transforms)
-    # if args.train.do_da_scaling:
-    #     train_transform = A.Compose([
-    #         A.HorizontalFlip(p=0.5),
-    #         A.VerticalFlip(p=0.5),
-    #         A.RandomRotate90(p=0.5),
-    #         A.Downscale((0.25, 1.0), p=1.0),
-    #     ])
-    # else:
-    #     train_transform = A.Compose([
-    #         A.HorizontalFlip(p=0.5),
-    #         A.VerticalFlip(p=0.5),
-    #         A.RandomRotate90(p=0.5),
-    #         # A.Downscale((0.25, 1.0), p=1.0),
-    #     ])
-        
+    train_transform = A.Compose(list_transforms)
+
     if DATASET_MODE == 'auto':
         full_dataset_train = DatasetProxy(
             mode=IS_TRAINED,
@@ -204,7 +208,8 @@ def training(args):
         # Logging
         logging_dir=LOG_DIR,                # TensorBoard logs
         logging_strategy="steps",           # Log every N steps
-        logging_steps=len(train_subset),    # Adjust for dataset size
+        # logging_steps=len(train_subset),    # Adjust for dataset size
+        logging_steps=50,    # Adjust for dataset size
         log_level="info",
 
         # Checkpoints
@@ -221,7 +226,9 @@ def training(args):
         fp16=True,                          # Mixed precision (if GPU supports)
         gradient_accumulation_steps=1,      # Increase effective batch size if needed
         dataloader_num_workers=NUM_WORKERS,           # Adjust according to CPU cores
-        disable_tqdm=False
+        disable_tqdm=False,
+        remove_unused_columns=False,
+        report_to=[],
     )
 
     trainer = TrainValMetricsTrainer(
@@ -235,16 +242,19 @@ def training(args):
         compute_metrics=compute_metrics,
     )
 
+    # trainer.add_callback(TrainMetricsCallback(trainer=trainer, compute_metrics_fn=compute_metrics))
     trainer.add_callback(MetricsCallback(trainer=trainer, cf_dir=CONFMAT_DIR))
-    trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
     trainer.add_callback(SavesCurrentStateCallback(trainer=trainer, last_checkpoint_dir=LAST_CHECKPOINT_DIR))
+    if DO_SAVE_BEST_PREDS:
+        trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
 
     # Train
     trainer.train(resume_from_checkpoint=EXISTING_DIR_TO_RESUME_FROM)
 
     # Save final model
     trainer.save_model(os.path.join(RESULTS_DIR, "segformer_trained_model"))
-    processor.save_pretrained(os.path.join(RESULTS_DIR, "segformer_trained_model"))
+    if processor is not None:
+        processor.save_pretrained(os.path.join(RESULTS_DIR, "segformer_trained_model"))
 
     # Visualization
     state_file = os.path.join(LAST_CHECKPOINT_DIR, "trainer_state.json")
@@ -268,19 +278,20 @@ def training(args):
     with open(os.path.join(RESULTS_DIR, 'best_results.json'), 'w') as f:
         json.dump(dict_best_results, f, indent=2)
 
-    # Save best confidence matrix
-    src_best_cm = os.path.join(CONFMAT_DIR, 'values', f"confusion_matrix_ep_{int(dict_best_results['epoch']-1)}.csv")
-    if os.path.exists(src_best_cm):
-        conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
-        sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
-        sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
-        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
-        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
-        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
-    else:
-        print("CONFMAT NOT CREATED FOR BEST EPOCH")
-        print("following does not exist:")
-        print(src_best_cm)
+    if DO_SAVE_BEST_PREDS:
+        # Save best confidence matrix
+        src_best_cm = os.path.join(CONFMAT_DIR, 'values', f"confusion_matrix_ep_{int(dict_best_results['epoch']-1)}.csv")
+        if os.path.exists(src_best_cm):
+            conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
+            sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
+            sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
+            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
+            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
+            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
+        else:
+            print("CONFMAT NOT CREATED FOR BEST EPOCH")
+            print("following does not exist:")
+            print(src_best_cm)
 
     # Show duration of process
     delta_time_loop = time() - time_start
@@ -288,6 +299,13 @@ def training(args):
     min = int((delta_time_loop - 3600 * hours) // 60)
     sec = int(delta_time_loop - 3600 * hours - 60 * min)
     print(f"---\n\n==== Training completed in {hours}:{min}:{sec} ====\n")
+
+    # Free memory
+    del trainer
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return RESULTS_DIR
 
 
 if __name__ == "__main__":

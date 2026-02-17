@@ -8,9 +8,11 @@ segmenter:
   # dataset_dir: 'data/dataset_Bern_v2_and_false_pos_0.5'
   # dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
   # dataset_dir: data/dataset_playground_3000
-  dataset_dir: data/dataset_Bern_2048/tiles
+  # dataset_dir: 'data/dataset_multi_res_with_false_pos'
+  dataset_dir: 'data/dataset_playground_multires_6000'
   trainset_dir: 'data/splitset_Bern_v2_training'
   valset_dir: 'data/splitset_Bern_v2_validation'
   mode: auto # choose auto for dataset or split for training and validation sets
 fusion:
-  dataset_dir: data/dataset_Bern_2048/tiles
+  # dataset_dir: data/dataset_Bern_2048/tiles
+  dataset_dir: data/dataset_Bern_2048_tiny

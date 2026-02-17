@@ -2,6 +2,7 @@ import os
 import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
+import rasterio
 import cv2
 import torch
 
@@ -59,7 +60,7 @@ def get_multiscale_patch(img_2048, mask_2048=None, scale=1.0):
     img_512 = resize_to_512(img_crop, is_mask=False)
 
     mask_512 = None
-    if mask_2048 != None:
+    if isinstance(mask_2048, np.ndarray):
         mask_crop = center_crop(mask_2048, crop_size)
         mask_512 = resize_to_512(mask_crop, is_mask=True)
 
@@ -139,8 +140,10 @@ class SegmentationDataset(Dataset):
         img_path = os.path.join(self.image_dir, self.images[idx])
         mask_path = os.path.join(self.mask_dir, self.masks[idx])
 
-        image = np.array(Image.open(img_path).convert("RGB"))
-        mask = np.array(Image.open(mask_path)).astype("int64")
+        # image = np.array(Image.open(img_path).convert("RGB"))
+        # mask = np.array(Image.open(mask_path)).astype("int64")
+        image = np.moveaxis(rasterio.open(img_path).read(), 0, 2)[..., :3]
+        mask = np.moveaxis(rasterio.open(mask_path).read(), 0, 2)
 
         # Apply augmentation
         if self.transform is not None:
@@ -148,13 +151,25 @@ class SegmentationDataset(Dataset):
             image = augmented["image"]
             mask = augmented["mask"]
 
-        inputs = self.processor(images=image, segmentation_maps=mask, return_tensors="pt")
+        if self.processor is not None:
+            inputs = self.processor(images=image, segmentation_maps=mask, return_tensors="pt")
+            inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)
+            inputs["labels"] = inputs["labels"].squeeze(0)
+            inputs['filename'] = self.images[idx]
+        else:
+            imgs = image.astype(np.float32) / 255.0
+            mean = np.array([0.485, 0.456, 0.406])[None, None, :]
+            std  = np.array([0.229, 0.224, 0.225])[None, None, :]
+            imgs = (imgs - mean) / std
 
-        # HF returns tensors with extra batch dim, we remove manually
-        inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)
-        inputs["labels"] = inputs["labels"].squeeze(0)
-        inputs['filename'] = self.images[idx]
+            # HF returns tensors with extra batch dim, we remove manually
+            inputs = {
+                "pixel_values": torch.from_numpy(imgs).float(),
+                'labels': torch.from_numpy(mask).squeeze(-1).long(),
+                'filename': self.images[idx]
+            }
 
+        
         return inputs
     
 
@@ -169,7 +184,7 @@ class DatasetProxy:
         scales=(1.0, 0.75, 0.5, 0.25),
     ):
         self.mode = mode
-
+        mode = 'segmenter'
         if mode == "fusion":
             self.dataset = SegFusionDataset(
                 image_dir=image_dir,

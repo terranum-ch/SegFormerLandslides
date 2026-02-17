@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from utils.production_utils import download_tile, produce_with_lower_res, predict_with_batch_fusion, geo_transfert, load_latest_checkpoint
-from utils.trainer import MultiScaleSegformer
+from utils.trainer import MultiScaleFusionModel
 
 from transformers import SegformerForSemanticSegmentation
 
@@ -336,7 +336,7 @@ def production(args):
     dest_clusters_dir = os.path.join(DEST_PREDS, 'clusters')
     dest_vectors_dir = os.path.join(DEST_PREDS, 'vectors')
     dest_originals_dir = os.path.join(DEST_PREDS, 'originals')
-    # dest_inter_dir = os.path.join(DEST_PREDS, 'inter')
+    dest_weights_dir = os.path.join(DEST_PREDS, 'weights')
 
     # === TILES DOWNLOADING ===
     # =========================
@@ -362,17 +362,17 @@ def production(args):
     os.makedirs(dest_probas_dir, exist_ok=True)
     os.makedirs(dest_clusters_dir, exist_ok=True)
     os.makedirs(dest_vectors_dir, exist_ok=True)
-    # os.makedirs(dest_inter_dir, exist_ok=True)
+    os.makedirs(dest_weights_dir, exist_ok=True)
     # load model
     ckpt_path = load_latest_checkpoint(MODEL_DIR)
-    model = MultiScaleSegformer.from_pretrained(ckpt_path)
+    model = MultiScaleFusionModel.from_pretrained(ckpt_path)
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.to(DEVICE)
     model.eval()
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
         # === PREDICTIONS =====
         # =====================
-        pred_mask, preds_img, proba_img = predict_with_batch_fusion(
+        pred_mask, preds_img, proba_img, weights_fusion = predict_with_batch_fusion(
             image=src_img, 
             model=model, 
             batch_size=BATCH_SIZE,
@@ -388,6 +388,12 @@ def production(args):
         src_preds_mask = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
         src_preds_img = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
         src_probas_mask = os.path.join(dest_probas_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
+
+        for i_weight in range(weights_fusion.shape[0]):
+            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
+            tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
+            tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
 
         if KEEP_MASK_BIN:
             tiff.imwrite(src_preds_mask, pred_mask.astype(np.uint8), compression="zstd", compressionargs={"level": 9})

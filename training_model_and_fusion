@@ -1,12 +1,29 @@
+import os
 from omegaconf import OmegaConf
-from copy import deepcopy
-import subprocess
-import tempfile
 import argparse
+import subprocess
+from training import training
 
 def train_both(conf):
-    print(OmegaConf.to_yaml(conf))
-    pass
+    # training segmenter
+    print("\n", "="*30)
+    print("=== TRAINING SEGMENTER =======")
+    print("\n", "="*30)
+
+    conf.train.num_epochs = conf.fusion.segmenter.num_epochs
+    conf.train.is_trained = 'segmenter'
+    segmenter_model_dir = training(conf)
+
+    # training fusion modulus
+    print("\n", "="*30)
+    print("=== TRAINING FUSION MOD ======")
+    print("\n", "="*30)
+
+    conf.train.num_epochs = conf.fusion.fusion.num_epochs
+    conf.train.is_trained = 'fusion'
+    conf.train.pretrained_model = segmenter_model_dir
+    # conf.train.pretrained_model = r"results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale"
+    training(conf)
 
 
 if __name__ == "__main__":
@@ -22,9 +39,10 @@ if __name__ == "__main__":
         args = OmegaConf.load(cfg_path)
     else:
         print("- Training from yaml file - ")
+        conf_fusion = OmegaConf.load('./config/training_fusion.yaml')
         conf_train = OmegaConf.load('./config/training.yaml')
         conf_dataset = OmegaConf.load('./config/dataset.yaml')
 
-        args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+        args= OmegaConf.merge({"fusion": conf_fusion, "train":conf_train, "dataset":conf_dataset})
 
     train_both(args)

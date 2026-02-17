@@ -142,6 +142,8 @@ def multi_production(configs, args, verbose=False):
 
 
 if __name__ == "__main__":
+    postprocess(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test_finetuning\with_multiple_versions\finetuning\test_6")
+    quit()
     src_dest = "data/test_finetuning/with_multiple_versions/finetuning/preds"
     os.makedirs(src_dest, exist_ok=True)
     list_th_preds = [0.05, 0.1, 0.3, 0.5, 0.7]
