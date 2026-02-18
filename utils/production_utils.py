@@ -15,6 +15,7 @@ from PIL import Image
 from itertools import product
 from time import time
 import tifffile as tiff
+from tqdm import tqdm
 
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
@@ -207,23 +208,28 @@ def predict_batch_array_fusion(
 
     # assert batch.ndim == 4 and batch.shape[-1] == 3
 
-    _, _, H, W, _ = batch.shape
+    _,  H, W, _ = batch.shape
     # batch = batch.permute(0, 1, 4, 2, 3)                  # (B, 3, H, W)
-    batch = batch.float() / 255.0
-    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,1,1,1,3)
-    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,1,1,1,3)
+    batch = batch / 255.0
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,1,1,3)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,1,1,3)
     batch = (batch - mean) / std
 
-    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
-        input = {'multspec_img': batch, 'return_weights': True}
-        logits, weights = model(**input)  # (B,C,h,w)
+    # with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+    with torch.no_grad():
+        # input = {'multspec_img': batch, 'return_weights': True}
+        # logits, weights = model(**input)  # (B,C,h,w)
+        logits, weights = model(
+            pixel_values=batch,
+            return_weights=True,
+            )
 
-        logits = F.interpolate(
-            logits.logits,
-            size=(H, W),
-            mode="bilinear",
-            align_corners=False
-        )
+        # logits = F.interpolate(
+        #     logits.logits,
+        #     size=(H, W),
+        #     mode="bilinear",
+        #     align_corners=False
+        # )
 
     return logits, weights  # keep on GPU
 
@@ -269,61 +275,83 @@ def predict_batch_array(
     return logits  # keep on GPU
 
 
-def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_size=2048, stride=256, th=0.5, scales=[1.0, 0.75, 0.5, 0.25], signal_cardinality=512, do_show=True, do_save=True, do_save_mask_as_img=True):
+def predict_with_batch_fusion(
+        image, 
+        model, 
+        img_path=None, 
+        batch_size=8,
+        tile_size=2048, 
+        stride=1024, 
+        th=0.5, 
+        scales=[1.0, 0.75, 0.5, 0.25], 
+        # signal_cardinality=512, 
+        do_show=True, 
+        do_save=True, 
+        do_save_mask_as_img=True
+        ):
     if not isinstance(image, Image.Image):
         img_path = image
         image = Image.open(image)
-    img_arr = np.array(image)
+    img_arr = np.array(image)[..., :3]
 
     img_padded, _, _ = mirror_pad_image_fusion(img_arr, tile_size, stride)
     H_original, W_original  = img_arr.shape[:2]
     H, W = img_padded.shape[:2]
     
     # prepare arrays
-    prob_acc = torch.zeros((H,W), device=model.device)
-    weight_acc = torch.zeros((H,W), device=model.device)
-    weights_fusion_acc = torch.zeros((4,H,W), device=model.device)
+    # prob_acc = torch.zeros((H,W), device=model.device)
+    # weight_acc = torch.zeros((H,W), device=model.device)
+    # weights_fusion_acc = torch.zeros((4,H,W), device=model.device)
+    prob_acc = torch.zeros((H,W))
+    weight_acc = torch.zeros((H,W))
+    weights_fusion_acc = torch.zeros((4,H,W))
 
     list_xpos = range(0, W - tile_size + 1, stride)
     list_ypos = range(0, H - tile_size + 1, stride)
     list_positions = list(product(list_xpos, list_ypos))
 
-    batch = torch.zeros((batch_size, len(scales), signal_cardinality, signal_cardinality, 3), device=model.device) # B x K x W x H x 3
+    # batch = torch.zeros((batch_size, len(scales), tile_size, tile_size, 3), device=model.device) # B x K x W x H x 3
+    batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device) # B x K x W x H x 3
     initial_poses = []
 
-    for id_sample, (x,y) in enumerate(list_positions):
+    for id_sample, (x,y) in tqdm(enumerate(list_positions), total=len(list_positions)):
         x0 = min(x, W - tile_size)
         y0 = min(y, H - tile_size)
-        # tile = torch.tensor(img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :])
         tile = img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :]
         
-        # extract different scales:
-        imgs = []
-        for s in scales:
-            img_s, _ = get_multiscale_patch(
-                img_2048=np.moveaxis(tile, 2, 0), 
-                scale=s,
-                )
-            imgs.append(np.moveaxis(img_s, 0, 2))
+
+        # # extract different scales:
+        # imgs = []
+        # for s in scales:
+        #     img_s, _ = get_multiscale_patch(
+        #         img_2048=np.moveaxis(tile, 2, 0), 
+        #         scale=s,
+        #         )
+        #     imgs.append(np.moveaxis(img_s, 0, 2))
 
         # stack for model
-        imgs = np.stack(imgs)      # (K, C, 512, 512)
+        # imgs = np.stack(imgs)      # (K, C, 512, 512)
 
-        batch[id_sample % batch_size, ...] = torch.tensor(imgs)
+        batch[id_sample % batch_size, ...] = torch.tensor(tile)
         initial_poses.append((x0, y0))
 
         # Crop region (handles border tiles automatically)
         if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
-            logits, weights_fusion = predict_batch_array_fusion(model, batch, model.device)
-            probs = torch.softmax(logits, dim=1)[:, ]
+            logits, weights_fusion = predict_batch_array_fusion(
+                model, 
+                batch, 
+                model.device
+                )
+            probs = torch.softmax(logits.logits, dim=1)[:, ].detach().cpu()
 
             for i in range(len(initial_poses)):
                 xi, yi = initial_poses[i]
-                prob_acc[yi:yi+signal_cardinality, xi:xi+signal_cardinality] += probs[i, 1, ...].reshape((signal_cardinality, signal_cardinality))
-                weight_acc[yi:yi+signal_cardinality, xi:xi+signal_cardinality] += 1
-                weights_fusion_acc[:, yi:yi+signal_cardinality, xi:xi+signal_cardinality] += weights_fusion[i, :].reshape((4, signal_cardinality, signal_cardinality))
+                prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))
+                weight_acc[yi:yi+tile_size, xi:xi+tile_size] += 1
+                # weights_fusion_acc[:, yi:yi+tile_size, xi:xi+tile_size] += weights_fusion[i, :].reshape((batch_size, tile_size, tile_size))
 
-            batch = torch.zeros((batch_size, len(scales), signal_cardinality, signal_cardinality, 3), device=model.device)
+            # batch = torch.zeros((batch_size, len(scales), tile_size, tile_size, 3), device=model.device)
+            batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
             initial_poses = []
 
     final_prob = torch.divide(prob_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
@@ -331,7 +359,7 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
 
-    final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
+    # final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
 
     src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.tif'
     src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.tif'
@@ -347,7 +375,7 @@ def predict_with_batch_fusion(image, model, img_path=None, batch_size=8, tile_si
     if do_show:
         plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
 
-    return final_labels, rgb_labels, final_prob, final_weights_fusion_acc
+    return final_labels, rgb_labels, final_prob, None#, final_weights_fusion_acc
 
 
 def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):

@@ -117,107 +117,117 @@ def tiles_downloading(
     return lst_tiles_src
 
 
-def prediction(
-        src_img, 
-        src_inter, 
-        src_dest_preds, 
-        src_dest_probas, 
-        resolutions, 
-        model_dir, 
-        batch_size=8,
-        tile_size=512, 
-        stride=256, 
-        threshold_proba= 0.5, 
-        threshold_grouping=0.5,
-        do_save_inter=True,
-        do_save_mask=True,
-        do_save_img=True,
-        do_save_probas=True,
-        ):
+# def prediction(
+#         src_img, 
+#         src_inter, 
+#         src_dest_preds, 
+#         src_dest_probas, 
+#         scales, 
+#         model_seg_dir,
+#         model_fus_dir, 
+#         batch_size=8,
+#         tile_size=512, 
+#         stride=256, 
+#         threshold_proba= 0.5, 
+#         threshold_grouping=0.5,
+#         do_save_inter=True,
+#         do_save_mask=True,
+#         do_save_img=True,
+#         do_save_probas=True,
+#         ):
     
-    # predict at each resolution
-    images = []
-    preds = []
-    masks = {}
-    probas = []
+#     # predict at each resolution
+#     images = []
+#     preds = []
+#     masks = {}
+#     probas = []
 
-    # load model
-    ckpt_path = load_latest_checkpoint(model_dir)
-    model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model.to(DEVICE)
-    model.eval()
+#     # load model
+#     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+#     # ckpt_path = load_latest_checkpoint(model_dir)
+#     # model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
+#     # model.to(DEVICE)
+#     # model.eval()
 
-    for res in resolutions:
-        res_img, src_res_img = produce_with_lower_res(src_img, src_inter, res, do_show=False)
-        pred_mask, preds_img, proba_img = predict_with_batch(
-            image=res_img, 
-            model=model, 
-            img_path=src_res_img,
-            batch_size=batch_size,
-            tile_size=tile_size,
-            stride=stride,
-            th=threshold_proba, 
-            do_show=False,
-            do_save=False,
-            do_save_mask_as_img=False,
-            )
-        images.append(res_img)
-        preds.append(preds_img)
-        # masks.append(pred_mask)
-        masks[res] = pred_mask
-        probas.append(proba_img)
+#     model  = MultiScaleFusionModel.from_pretrained(
+#         segformer_model_name_or_path=load_latest_checkpoint(model_seg_dir),
+#         scales=[1.0, 0.75, 0.5, 0.25],
+#         fusion_checkpoint=load_latest_checkpoint(model_fus_dir),
+#         num_labels=2,
+#         map_location=DEVICE,
+#     )
+#     model.eval()
+    
+#     for res in scales:
+#         res_img, src_res_img = produce_with_lower_res(src_img, src_inter, res, do_show=False)
+#         pred_mask, preds_img, proba_img = predict_with_batch_fusion(
+#             image=res_img, 
+#             model=model, 
+#             img_path=src_res_img,
+#             batch_size=batch_size,
+#             tile_size=tile_size,
+#             stride=stride,
+#             th=threshold_proba, 
+#             do_show=False,
+#             do_save=False,
+#             do_save_mask_as_img=False,
+#             )
+#         images.append(res_img)
+#         preds.append(preds_img)
+#         # masks.append(pred_mask)
+#         masks[res] = pred_mask
+#         probas.append(proba_img)
 
-    # merge different resolutions into one final
-    original_img = Image.open(src_img)
+#     # merge different resolutions into one final
+#     original_img = Image.open(src_img)
 
-    W, H = original_img.size
+#     W, H = original_img.size
 
-    #   _creation of final preds
-    final_product = np.zeros((H, W), dtype=np.float32)
+#     #   _creation of final preds
+#     final_product = np.zeros((H, W), dtype=np.float32)
 
-    for res, mask in masks.items():
-        rescaled_mask = Image.fromarray(mask).resize((W, H), Image.NEAREST)
-        final_product += rescaled_mask
+#     for res, mask in masks.items():
+#         rescaled_mask = Image.fromarray(mask).resize((W, H), Image.NEAREST)
+#         final_product += rescaled_mask
 
-        if do_save_inter:
-            src_dest_preds_mask = os.path.join(src_inter, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res}_preds_mask.tif')
-            tiff.imwrite(src_dest_preds_mask, rescaled_mask, compression="zstd", compressionargs={"level": 9})
+#         if do_save_inter:
+#             src_dest_preds_mask = os.path.join(src_inter, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res}_preds_mask.tif')
+#             tiff.imwrite(src_dest_preds_mask, rescaled_mask, compression="zstd", compressionargs={"level": 9})
 
-    final_product /= len(masks)
-    final_product[final_product >= threshold_grouping] = 1
-    final_product[final_product < threshold_grouping] = 0
-    final_product = final_product.astype(np.uint8)
+#     final_product /= len(masks)
+#     final_product[final_product >= threshold_grouping] = 1
+#     final_product[final_product < threshold_grouping] = 0
+#     final_product = final_product.astype(np.uint8)
 
-    final_product_rgb = np.zeros((W, H, 3))
-    final_product_rgb[final_product == 1] = 255
+#     final_product_rgb = np.zeros((W, H, 3))
+#     final_product_rgb[final_product == 1] = 255
 
-    src_final_preds_mask = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
-    src_final_preds_img = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
-    src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
+#     src_final_preds_mask = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
+#     src_final_preds_img = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
+#     src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
 
-    if do_save_mask:
-        tiff.imwrite(src_final_preds_mask, final_product.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-    if do_save_img:
-        tiff.imwrite(src_final_preds_img, final_product_rgb.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+#     if do_save_mask:
+#         tiff.imwrite(src_final_preds_mask, final_product.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+#     if do_save_img:
+#         tiff.imwrite(src_final_preds_img, final_product_rgb.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
 
 
-    if do_save_probas:
-        #   _creation of final probas
-        final_probas = np.zeros((W,H), dtype=np.float32)
+#     if do_save_probas:
+#         #   _creation of final probas
+#         final_probas = np.zeros((W,H), dtype=np.float32)
 
-        for proba in probas:
-            rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
-            final_probas += rescaled_proba
+#         for proba in probas:
+#             rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
+#             final_probas += rescaled_proba
 
-        final_probas /= len(probas)
+#         final_probas /= len(probas)
 
-        final_probas = np.clip(final_probas, 0, 1)
-        final_probas = (final_probas * 255).astype(np.uint8)
+#         final_probas = np.clip(final_probas, 0, 1)
+#         final_probas = (final_probas * 255).astype(np.uint8)
 
-        tiff.imwrite(src_final_probas_mask, final_probas, compression="zstd", compressionargs={"level": 9})
+#         tiff.imwrite(src_final_probas_mask, final_probas, compression="zstd", compressionargs={"level": 9})
 
-    return final_product, src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
+#     return final_product, src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
 
 
 def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_palette, do_save_img=True):
@@ -316,7 +326,9 @@ def production(args):
     AREA = args.downloader.area
     YEAR = args.downloader.year
     DEST_PREDS = args.predictions.destination
-    MODEL_DIR = args.predictions.model_dir
+    # MODEL_DIR = args.predictions.model_dir
+    MODEL_SEG_DIR = args.predictions.model_seg_dir
+    MODEL_FUS_DIR = args.predictions.model_fus_dir
     BATCH_SIZE = args.predictions.batch_size
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
@@ -363,20 +375,31 @@ def production(args):
     os.makedirs(dest_clusters_dir, exist_ok=True)
     os.makedirs(dest_vectors_dir, exist_ok=True)
     os.makedirs(dest_weights_dir, exist_ok=True)
+
     # load model
-    ckpt_path = load_latest_checkpoint(MODEL_DIR)
-    model = MultiScaleFusionModel.from_pretrained(ckpt_path)
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model.to(DEVICE)
+    # ckpt_path = load_latest_checkpoint(MODEL_DIR)
+    # model = MultiScaleFusionModel.from_pretrained(ckpt_path)
+    # model.to(DEVICE)
+    # model.eval()
+    model  = MultiScaleFusionModel.from_pretrained(
+        segformer_model_name_or_path=load_latest_checkpoint(MODEL_SEG_DIR),
+        scales=[1.0, 0.75, 0.5, 0.25],
+        fusion_checkpoint=load_latest_checkpoint(MODEL_FUS_DIR),
+        num_labels=2,
+        device=DEVICE,
+        )
     model.eval()
+
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
+
         # === PREDICTIONS =====
         # =====================
         pred_mask, preds_img, proba_img, weights_fusion = predict_with_batch_fusion(
             image=src_img, 
             model=model, 
             batch_size=BATCH_SIZE,
-            tile_size=2048,
+            tile_size=TILE_SIZE,
             stride=STRIDE,
             th=THRESHOLD_PREDS, 
             scales=SCALES,
@@ -389,11 +412,11 @@ def production(args):
         src_preds_img = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
         src_probas_mask = os.path.join(dest_probas_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
 
-        for i_weight in range(weights_fusion.shape[0]):
-            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
-            tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
-            tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
+        # for i_weight in range(weights_fusion.shape[0]):
+        #     src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
+        #     tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+        #     src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
+        #     tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
 
         if KEEP_MASK_BIN:
             tiff.imwrite(src_preds_mask, pred_mask.astype(np.uint8), compression="zstd", compressionargs={"level": 9})

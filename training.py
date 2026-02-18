@@ -219,6 +219,7 @@ def training(args):
 
         # Evaluation
         eval_strategy="epoch",              # Evaluate at the end of each epoch
+        eval_accumulation_steps=1,
         load_best_model_at_end=True,        # Load checkpoint with best metric
         metric_for_best_model="mean_dice",       # Adjust if using other metrics
 

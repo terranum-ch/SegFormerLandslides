@@ -5,6 +5,7 @@ from PIL import Image
 import rasterio
 import cv2
 import torch
+import pickle
 
 def resize_to_512(img, is_mask=False):
     interp = cv2.INTER_NEAREST if is_mask else cv2.INTER_LINEAR
@@ -67,34 +68,102 @@ def get_multiscale_patch(img_2048, mask_2048=None, scale=1.0):
     return img_512, mask_512
 
 
+# class SegFusionDataset(Dataset):
+#     def __init__(self, image_dir, mask_dir, scales, transform=None):
+#         self.image_dir = image_dir
+#         self.mask_dir = mask_dir
+#         self.scales = scales
+#         self.transform = transform
+
+#         self.images = sorted(os.listdir(image_dir))
+#         self.masks  = sorted(os.listdir(mask_dir))
+
+#         assert len(self.images) == len(self.masks), "Image/mask count mismatch"
+
+#     def __len__(self):
+#         return len(self.images)
+
+#     def __getitem__(self, idx):
+#         img_path = os.path.join(self.image_dir, self.images[idx])
+#         mask_path = os.path.join(self.mask_dir, self.masks[idx])
+
+#         image = np.array(Image.open(img_path).convert("RGB"))
+#         mask = np.array(Image.open(mask_path)).astype("int64")
+
+#         # Apply augmentation
+#         if self.transform is not None:
+#             augmented = self.transform(image=image, mask=mask)
+#             image = augmented["image"]
+#             mask = augmented["mask"]
+
+#         imgs = []
+
+#         for s in self.scales:
+#             img_s, _ = get_multiscale_patch(np.moveaxis(image, 2, 0), mask, s)
+#             imgs.append(np.moveaxis(img_s, 0, 2))
+
+#         # stack for model
+#         imgs = np.stack(imgs)      # (K, C, 512, 512)
+#         mask = center_crop(mask, 512)
+
+#         # normalize imgs:
+#         imgs = imgs.astype(np.float32) / 255.0
+#         mean = np.array([0.485, 0.456, 0.406])[None, None, None, :]
+#         std  = np.array([0.229, 0.224, 0.225])[None, None, None, :]
+#         imgs = (imgs - mean) / std
+
+#         # HF returns tensors with extra batch dim, we remove manually
+#         inputs = {
+#             "multspec_img": torch.from_numpy(imgs).float(),
+#             'labels': torch.from_numpy(mask).long(),
+#             'filename': self.images[idx]
+#         }
+
+#         return inputs
+
+
 class SegFusionDataset(Dataset):
     def __init__(self, image_dir, mask_dir, scales, transform=None):
+        self.logits_dir = os.path.join(os.path.dirname(image_dir), 'segpredict')
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.scales = scales
         self.transform = transform
 
         self.images = sorted(os.listdir(image_dir))
+        self.logits = sorted(os.listdir(self.logits_dir))
         self.masks  = sorted(os.listdir(mask_dir))
 
         assert len(self.images) == len(self.masks), "Image/mask count mismatch"
+        assert os.path.exists(self.logits_dir)
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.image_dir, self.images[idx])
+        logits_path = os.path.join(self.image_dir, self.logits[idx])
+        # img_path = os.path.join(self.image_dir, self.images[idx])
         mask_path = os.path.join(self.mask_dir, self.masks[idx])
 
-        image = np.array(Image.open(img_path).convert("RGB"))
+        # image = np.array(Image.open(img_path).convert("RGB"))
+        with open(logits_path, 'rb') as f:
+            logits = pickle.load(f)
         mask = np.array(Image.open(mask_path)).astype("int64")
 
         # Apply augmentation
         if self.transform is not None:
-            augmented = self.transform(image=image, mask=mask)
-            image = augmented["image"]
+            augmented = self.transform(image=logits, mask=mask)
+            # image = augmented["image"]
+            logits = augmented['image']
             mask = augmented["mask"]
 
+        inputs = {
+            "logits": logits,
+            'labels': torch.from_numpy(mask).long(),
+            'filename': self.images[idx]
+        }
+
+        return inputs
         imgs = []
 
         for s in self.scales:
@@ -169,7 +238,6 @@ class SegmentationDataset(Dataset):
                 'filename': self.images[idx]
             }
 
-        
         return inputs
     
 

@@ -1,9 +1,10 @@
 import torch
 import numpy as np
+import os
 from math import prod
 import time
 from tqdm import tqdm
-from transformers import Trainer
+from transformers import Trainer, SegformerForSemanticSegmentation
 from torch.utils.data import default_collate
 from torch.utils.data import Subset
 from torch import nn
@@ -23,6 +24,8 @@ from transformers.integrations.deepspeed import deepspeed_init
 from transformers.trainer_pt_utils import EvalLoopContainer, find_batch_size, IterableDatasetShard
 from transformers.trainer_utils import EvalPrediction, EvalLoopOutput, denumpify_detensorize, has_length
 from transformers.utils import logging
+from safetensors.torch import load_file
+
 logger = logging.get_logger(__name__)
 
 
@@ -199,232 +202,232 @@ class TrainValMetricsTrainer(Trainer):
 
         return loss.detach()
     
-    def evaluation_loop(self, dataloader, description, prediction_loss_only = None, ignore_keys = None, metric_key_prefix = "eval"):
-        args = self.args
+    # def evaluation_loop(self, dataloader, description, prediction_loss_only = None, ignore_keys = None, metric_key_prefix = "eval"):
+    #     args = self.args
 
-        prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
+    #     prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
 
-        # if eval is called w/o train, handle model prep here
-        if self.is_deepspeed_enabled and self.deepspeed is None:
-            _, _ = deepspeed_init(self, num_training_steps=0, inference=True)
+    #     # if eval is called w/o train, handle model prep here
+    #     if self.is_deepspeed_enabled and self.deepspeed is None:
+    #         _, _ = deepspeed_init(self, num_training_steps=0, inference=True)
 
-        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
+    #     model = self._wrap_model(self.model, training=False, dataloader=dataloader)
 
-        if len(self.accelerator._models) == 0 and model is self.model:
-            start_time = time.time()
-            model = (
-                self.accelerator.prepare(model)
-                if self.is_deepspeed_enabled
-                or (self.is_fsdp_enabled and self.accelerator.mixed_precision != "fp8" and not self.args.torch_compile)
-                else self.accelerator.prepare_model(model, evaluation_mode=True)
-            )
-            self.model_preparation_time = round(time.time() - start_time, 4)
+    #     if len(self.accelerator._models) == 0 and model is self.model:
+    #         start_time = time.time()
+    #         model = (
+    #             self.accelerator.prepare(model)
+    #             if self.is_deepspeed_enabled
+    #             or (self.is_fsdp_enabled and self.accelerator.mixed_precision != "fp8" and not self.args.torch_compile)
+    #             else self.accelerator.prepare_model(model, evaluation_mode=True)
+    #         )
+    #         self.model_preparation_time = round(time.time() - start_time, 4)
 
-            if self.is_fsdp_enabled:
-                self.model = model
+    #         if self.is_fsdp_enabled:
+    #             self.model = model
 
-            # for the rest of this function `model` is the outside model, whether it was wrapped or not
-            if model is not self.model:
-                self.model_wrapped = model
+    #         # for the rest of this function `model` is the outside model, whether it was wrapped or not
+    #         if model is not self.model:
+    #             self.model_wrapped = model
 
-            # backward compatibility
-            if self.is_deepspeed_enabled:
-                self.deepspeed = self.model_wrapped
+    #         # backward compatibility
+    #         if self.is_deepspeed_enabled:
+    #             self.deepspeed = self.model_wrapped
 
-        # if full fp16 or bf16 eval is wanted and this ``evaluation`` or ``predict`` isn't called
-        # while ``train`` is running, cast it to the right dtype first and then put on device
-        if not self.is_in_train:
-            if args.fp16_full_eval:
-                model = model.to(dtype=torch.float16, device=args.device)
-            elif args.bf16_full_eval:
-                model = model.to(dtype=torch.bfloat16, device=args.device)
+    #     # if full fp16 or bf16 eval is wanted and this ``evaluation`` or ``predict`` isn't called
+    #     # while ``train`` is running, cast it to the right dtype first and then put on device
+    #     if not self.is_in_train:
+    #         if args.fp16_full_eval:
+    #             model = model.to(dtype=torch.float16, device=args.device)
+    #         elif args.bf16_full_eval:
+    #             model = model.to(dtype=torch.bfloat16, device=args.device)
 
-        batch_size = self.args.eval_batch_size
+    #     batch_size = self.args.eval_batch_size
 
-        logger.info(f"\n***** Running {description} *****")
-        if has_length(dataloader):
-            logger.info(f"  Num examples = {self.num_examples(dataloader)}")
-        else:
-            logger.info("  Num examples: Unknown")
-        logger.info(f"  Batch size = {batch_size}")
+    #     logger.info(f"\n***** Running {description} *****")
+    #     if has_length(dataloader):
+    #         logger.info(f"  Num examples = {self.num_examples(dataloader)}")
+    #     else:
+    #         logger.info("  Num examples: Unknown")
+    #     logger.info(f"  Batch size = {batch_size}")
 
-        if hasattr(model, "eval") and callable(model.eval):
-            model.eval()
-        if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
-            self.optimizer.eval()
+    #     if hasattr(model, "eval") and callable(model.eval):
+    #         model.eval()
+    #     if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
+    #         self.optimizer.eval()
 
-        self.callback_handler.eval_dataloader = dataloader
-        # Do this before wrapping.
-        eval_dataset = getattr(dataloader, "dataset", None)
+    #     self.callback_handler.eval_dataloader = dataloader
+    #     # Do this before wrapping.
+    #     eval_dataset = getattr(dataloader, "dataset", None)
 
-        if args.past_index >= 0:
-            self._past = None
+    #     if args.past_index >= 0:
+    #         self._past = None
 
-        # Initialize containers
-        all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+    #     # Initialize containers
+    #     all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+    #     all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+    #     all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+    #     all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
 
-        metrics = None
-        eval_set_kwargs = {}
+    #     metrics = None
+    #     eval_set_kwargs = {}
 
-        # Will be useful when we have an iterable dataset so don't know its length.
-        observed_num_examples = 0
+    #     # Will be useful when we have an iterable dataset so don't know its length.
+    #     observed_num_examples = 0
 
-        # Main evaluation loop
-        for step, inputs in enumerate(dataloader):
-            # Update the observed num examples
-            observed_batch_size = find_batch_size(inputs)
-            if observed_batch_size is not None:
-                observed_num_examples += observed_batch_size
-                # For batch samplers, batch_size is not known by the dataloader in advance.
-                if batch_size is None:
-                    batch_size = observed_batch_size
+    #     # Main evaluation loop
+    #     for step, inputs in enumerate(dataloader):
+    #         # Update the observed num examples
+    #         observed_batch_size = find_batch_size(inputs)
+    #         if observed_batch_size is not None:
+    #             observed_num_examples += observed_batch_size
+    #             # For batch samplers, batch_size is not known by the dataloader in advance.
+    #             if batch_size is None:
+    #                 batch_size = observed_batch_size
 
-            # -----------------------------
-            # ------- custom lines --------
-            # -----------------------------
+    #         # -----------------------------
+    #         # ------- custom lines --------
+    #         # -----------------------------
 
-            # Prediction step
-            #   remove filename from the inputs before giving it to the model
-            # filename_in = 'filename' in inputs.keys()
-            # if filename_in: 
+    #         # Prediction step
+    #         #   remove filename from the inputs before giving it to the model
+    #         # filename_in = 'filename' in inputs.keys()
+    #         # if filename_in: 
 
-            filenames = inputs['filename']
-            inputs = {k:v for k,v in inputs.items() if k != 'filename'}
-            losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+    #         filenames = inputs['filename']
+    #         inputs = {k:v for k,v in inputs.items() if k != 'filename'}
+    #         losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
 
-            #   split batches to add each sample
-            # if filename_in:
-            preds = self.logits_to_preds(logits)
-            for sample_id in range(preds.shape[0]):
-                self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
-            labels_cpu = labels.cpu().detach().clone()
-            dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
-            self.confmat += compute_cm_from_dict(dict_conf_mat)
+    #         #   split batches to add each sample
+    #         # if filename_in:
+    #         preds = self.logits_to_preds(logits)
+    #         for sample_id in range(preds.shape[0]):
+    #             self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
+    #         labels_cpu = labels.cpu().detach().clone()
+    #         dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
+    #         self.confmat += compute_cm_from_dict(dict_conf_mat)
                 
-            # -----------------------------
-            # -----------------------------
+    #         # -----------------------------
+    #         # -----------------------------
             
-            main_input_name = getattr(self.model, "main_input_name", "input_ids")
-            inputs_decode = (
-                self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
-            )
+    #         main_input_name = getattr(self.model, "main_input_name", "input_ids")
+    #         inputs_decode = (
+    #             self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
+    #         )
 
-            # if is_torch_xla_available():
-            #     xm.mark_step()
+    #         # if is_torch_xla_available():
+    #         #     xm.mark_step()
 
-            # Update containers
-            if losses is not None:
-                losses = self.gather_function(losses.repeat(batch_size))
-                all_losses.add(losses)
-            if inputs_decode is not None:
-                inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
-                inputs_decode = self.gather_function(inputs_decode)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_inputs.add(inputs_decode)
-            if labels is not None:
-                # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
-                labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
-            if logits is not None:
-                logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
-                if self.preprocess_logits_for_metrics is not None:
-                    logits = self.preprocess_logits_for_metrics(logits, labels)
-                logits = self.gather_function(logits)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_preds.add(logits)
-            if labels is not None:
-                labels = self.gather_function(labels)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_labels.add(labels)
+    #         # Update containers
+    #         if losses is not None:
+    #             losses = self.gather_function(losses.repeat(batch_size))
+    #             all_losses.add(losses)
+    #         if inputs_decode is not None:
+    #             inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
+    #             inputs_decode = self.gather_function(inputs_decode)
+    #             if not self.args.batch_eval_metrics or description == "Prediction":
+    #                 all_inputs.add(inputs_decode)
+    #         if labels is not None:
+    #             # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
+    #             labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+    #         if logits is not None:
+    #             logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
+    #             if self.preprocess_logits_for_metrics is not None:
+    #                 logits = self.preprocess_logits_for_metrics(logits, labels)
+    #             logits = self.gather_function(logits)
+    #             if not self.args.batch_eval_metrics or description == "Prediction":
+    #                 all_preds.add(logits)
+    #         if labels is not None:
+    #             labels = self.gather_function(labels)
+    #             if not self.args.batch_eval_metrics or description == "Prediction":
+    #                 all_labels.add(labels)
 
-            self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
+    #         self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
-            if self.args.batch_eval_metrics:
-                if self.compute_metrics is not None and logits is not None and labels is not None:
-                    is_last_step = self.accelerator.gradient_state.end_of_dataloader
-                    batch_kwargs = {}
-                    batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
-                    batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
-                    metrics = self.compute_metrics(
-                        EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
-                        compute_result=is_last_step,
-                    )
+    #         if self.args.batch_eval_metrics:
+    #             if self.compute_metrics is not None and logits is not None and labels is not None:
+    #                 is_last_step = self.accelerator.gradient_state.end_of_dataloader
+    #                 batch_kwargs = {}
+    #                 batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
+    #                 batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+    #                 metrics = self.compute_metrics(
+    #                     EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
+    #                     compute_result=is_last_step,
+    #                 )
 
-                del losses, logits, labels, inputs
-                torch.cuda.empty_cache()
+    #             del losses, logits, labels, inputs
+    #             torch.cuda.empty_cache()
 
-            # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
-                all_losses.to_cpu_and_numpy()
-                all_preds.to_cpu_and_numpy()
-                all_labels.to_cpu_and_numpy()
-                all_inputs.to_cpu_and_numpy()
+    #         # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
+    #         elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+    #             all_losses.to_cpu_and_numpy()
+    #             all_preds.to_cpu_and_numpy()
+    #             all_labels.to_cpu_and_numpy()
+    #             all_inputs.to_cpu_and_numpy()
 
-                del losses, logits, labels, inputs
-                torch.cuda.empty_cache()
+    #             del losses, logits, labels, inputs
+    #             torch.cuda.empty_cache()
 
-        # After all calls to `.gather_function`, reset to `gather_for_metrics`:
-        self.gather_function = self.accelerator.gather_for_metrics
-        if args.past_index and hasattr(self, "_past"):
-            # Clean the state at the end of the evaluation loop
-            delattr(self, "_past")
+    #     # After all calls to `.gather_function`, reset to `gather_for_metrics`:
+    #     self.gather_function = self.accelerator.gather_for_metrics
+    #     if args.past_index and hasattr(self, "_past"):
+    #         # Clean the state at the end of the evaluation loop
+    #         delattr(self, "_past")
 
-        # Gather all remaining tensors and put them back on the CPU
-        all_losses = all_losses.get_arrays()
-        all_preds = all_preds.get_arrays()
-        all_labels = all_labels.get_arrays()
-        all_inputs = all_inputs.get_arrays()
+    #     # Gather all remaining tensors and put them back on the CPU
+    #     all_losses = all_losses.get_arrays()
+    #     all_preds = all_preds.get_arrays()
+    #     all_labels = all_labels.get_arrays()
+    #     all_inputs = all_inputs.get_arrays()
 
-        # Number of samples
-        if has_length(eval_dataset):
-            num_samples = len(eval_dataset)
-        # The instance check is weird and does not actually check for the type, but whether the dataset has the right
-        # methods. Therefore we need to make sure it also has the attribute.
-        elif isinstance(eval_dataset, IterableDatasetShard) and getattr(eval_dataset, "num_examples", 0) > 0:
-            num_samples = eval_dataset.num_examples
-        else:
-            if has_length(dataloader):
-                num_samples = self.num_examples(dataloader)
-            else:  # both len(dataloader.dataset) and len(dataloader) fail
-                num_samples = observed_num_examples
-        if num_samples == 0 and observed_num_examples > 0:
-            num_samples = observed_num_examples
+    #     # Number of samples
+    #     if has_length(eval_dataset):
+    #         num_samples = len(eval_dataset)
+    #     # The instance check is weird and does not actually check for the type, but whether the dataset has the right
+    #     # methods. Therefore we need to make sure it also has the attribute.
+    #     elif isinstance(eval_dataset, IterableDatasetShard) and getattr(eval_dataset, "num_examples", 0) > 0:
+    #         num_samples = eval_dataset.num_examples
+    #     else:
+    #         if has_length(dataloader):
+    #             num_samples = self.num_examples(dataloader)
+    #         else:  # both len(dataloader.dataset) and len(dataloader) fail
+    #             num_samples = observed_num_examples
+    #     if num_samples == 0 and observed_num_examples > 0:
+    #         num_samples = observed_num_examples
 
-        # Metrics!
-        if (
-            self.compute_metrics is not None
-            and all_preds is not None
-            and all_labels is not None
-            and not self.args.batch_eval_metrics
-        ):
-            eval_set_kwargs["losses"] = all_losses if "loss" in args.include_for_metrics else None
-            eval_set_kwargs["inputs"] = all_inputs if "inputs" in args.include_for_metrics else None
-            metrics = self.compute_metrics(
-                EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
-            )
-        elif metrics is None:
-            metrics = {}
+    #     # Metrics!
+    #     if (
+    #         self.compute_metrics is not None
+    #         and all_preds is not None
+    #         and all_labels is not None
+    #         and not self.args.batch_eval_metrics
+    #     ):
+    #         eval_set_kwargs["losses"] = all_losses if "loss" in args.include_for_metrics else None
+    #         eval_set_kwargs["inputs"] = all_inputs if "inputs" in args.include_for_metrics else None
+    #         metrics = self.compute_metrics(
+    #             EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
+    #         )
+    #     elif metrics is None:
+    #         metrics = {}
 
-        # To be JSON-serializable, we need to remove numpy types or zero-d tensors
-        metrics = denumpify_detensorize(metrics)
+    #     # To be JSON-serializable, we need to remove numpy types or zero-d tensors
+    #     metrics = denumpify_detensorize(metrics)
 
-        if isinstance(all_losses, list) and all_losses:
-            metrics[f"{metric_key_prefix}_loss"] = np.concatenate(all_losses).mean().item()
-        elif isinstance(all_losses, np.ndarray):
-            metrics[f"{metric_key_prefix}_loss"] = all_losses.mean().item()
-        if hasattr(self, "jit_compilation_time"):
-            metrics[f"{metric_key_prefix}_jit_compilation_time"] = self.jit_compilation_time
-        if hasattr(self, "model_preparation_time"):
-            metrics[f"{metric_key_prefix}_model_preparation_time"] = self.model_preparation_time
+    #     if isinstance(all_losses, list) and all_losses:
+    #         metrics[f"{metric_key_prefix}_loss"] = np.concatenate(all_losses).mean().item()
+    #     elif isinstance(all_losses, np.ndarray):
+    #         metrics[f"{metric_key_prefix}_loss"] = all_losses.mean().item()
+    #     if hasattr(self, "jit_compilation_time"):
+    #         metrics[f"{metric_key_prefix}_jit_compilation_time"] = self.jit_compilation_time
+    #     if hasattr(self, "model_preparation_time"):
+    #         metrics[f"{metric_key_prefix}_model_preparation_time"] = self.model_preparation_time
 
-        # Prefix all keys with metric_key_prefix + '_'
-        for key in list(metrics.keys()):
-            if not key.startswith(f"{metric_key_prefix}_"):
-                metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
+    #     # Prefix all keys with metric_key_prefix + '_'
+    #     for key in list(metrics.keys()):
+    #         if not key.startswith(f"{metric_key_prefix}_"):
+    #             metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
+    #     return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
 
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -464,38 +467,38 @@ class TrainValMetricsTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-# class ScaleAttention(nn.Module):
-#     def __init__(self, n_scales, n_classes):
-#         super().__init__()
-#         self.n_scales = n_scales
-#         self.n_classes = n_classes
+class ScaleAttention(nn.Module):
+    def __init__(self, n_scales, n_classes):
+        super().__init__()
+        self.n_scales = n_scales
+        self.n_classes = n_classes
 
-#         in_ch = n_scales * n_classes
+        in_ch = n_scales * n_classes
 
-#         self.net = nn.Sequential(
-#             nn.Conv2d(in_ch, 32, 3, padding=1),
-#             nn.ReLU(),
-#             nn.Conv2d(32, n_scales, 1)
-#         )
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, n_scales, 1)
+        )
 
-#     def forward(self, stacked_logits):
-#         # stacked_logits: [B, K*C, H, W]
-#         B, KC, H, W = stacked_logits.shape
-#         K = self.n_scales
-#         C = self.n_classes
+    def forward(self, stacked_logits):
+        # stacked_logits: [B, K*C, H, W]
+        B, KC, H, W = stacked_logits.shape
+        K = self.n_scales
+        C = self.n_classes
 
-#         # Compute weights per scale
-#         # weights = torch.softmax(self.net(stacked_logits), dim=1)  # [B, K, H, W]
-#         weights = torch.sigmoid(self.net(stacked_logits))  # [B, K, H, W]   # new
-#         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)   # new
+        # Compute weights per scale
+        # weights = torch.softmax(self.net(stacked_logits), dim=1)  # [B, K, H, W]
+        weights = torch.sigmoid(self.net(stacked_logits))  # [B, K, H, W]   # new
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)   # new
 
-#         # Reshape logits to separate scales and classes
-#         logits = stacked_logits.view(B, K, C, H, W)
+        # Reshape logits to separate scales and classes
+        logits = stacked_logits.view(B, K, C, H, W)
 
-#         # Apply weights to all classes of each scale
-#         fused = (weights.unsqueeze(2) * logits).sum(dim=1)  # [B, C, H, W]
+        # Apply weights to all classes of each scale
+        fused = (weights.unsqueeze(2) * logits).sum(dim=1)  # [B, C, H, W]
 
-#         return fused, weights
+        return fused, weights
         
 
 # class MultiScaleSegformer(SegformerPreTrainedModel):
@@ -861,7 +864,7 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
     returns: stitched logits [1, C, H, W]
     """
 
-    B, C, H, W = image.shape
+    B, _, H, W = image.shape
     C = model.config.num_labels
 
     output = torch.zeros((B, C, H, W), device=device)
@@ -883,6 +886,7 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
                 patch = F.pad(patch, (0, pad_w, 0, pad_h))
 
             with torch.no_grad():
+                # with torch.amp.autocast(device_type='cuda'):
                 logits = model(pixel_values=patch).logits
 
                 logits = F.interpolate(
@@ -946,52 +950,52 @@ def multiscale_logits(model, image_2048, scales, device="cuda"):
 
     return logits_per_scale
 
-class ScaleAttention(nn.Module):
-    def __init__(self, n_scales, n_classes):
-        super().__init__()
-        self.n_scales = n_scales
-        self.n_classes = n_classes
+# class ScaleAttention(nn.Module):
+#     def __init__(self, n_scales, n_classes):
+#         super().__init__()
+#         self.n_scales = n_scales
+#         self.n_classes = n_classes
 
-        in_ch = n_scales * n_classes
+#         in_ch = n_scales * n_classes
 
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
-            nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
-        )
+#         self.net = nn.Sequential(
+#             nn.Conv2d(in_ch, 32, 3, padding=1),
+#             nn.ReLU(inplace=True),
+#             nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
+#             nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
+#         )
 
-    def forward(self, stacked_logits):
-        """
-        stacked_logits: [B, K*C, H, W]
-        """
+#     def forward(self, stacked_logits):
+#         """
+#         stacked_logits: [B, K*C, H, W]
+#         """
 
-        B, KC, H, W = stacked_logits.shape
-        K = self.n_scales
-        C = self.n_classes
+#         B, KC, H, W = stacked_logits.shape
+#         K = self.n_scales
+#         C = self.n_classes
 
-        # === Compute class-aware raw weights ===
-        raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
+#         # === Compute class-aware raw weights ===
+#         raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
 
-        # reshape -> [B, K, C, 1, 1]
-        weights = raw_weights.view(B, K, C, 1, 1)
+#         # reshape -> [B, K, C, 1, 1]
+#         weights = raw_weights.view(B, K, C, 1, 1)
 
-        # Sigmoid gating
-        weights = torch.sigmoid(weights)
+#         # Sigmoid gating
+#         weights = torch.sigmoid(weights)
 
-        # Normalize across scales PER CLASS
-        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+#         # Normalize across scales PER CLASS
+#         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
 
-        # === Separate logits ===
-        logits = stacked_logits.view(B, K, C, H, W)
+#         # === Separate logits ===
+#         logits = stacked_logits.view(B, K, C, H, W)
 
-        # === Weighted fusion per class ===
-        fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
+#         # === Weighted fusion per class ===
+#         fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
 
-        return fused, weights
+#         return fused, weights
 
 class MultiScaleFusionModel(nn.Module):
-    def __init__(self, segformer, scales):
+    def __init__(self, segformer, scales, device=None):
         super().__init__()
 
         self.segformer = segformer.eval()  # frozen
@@ -1004,107 +1008,39 @@ class MultiScaleFusionModel(nn.Module):
             n_scales=len(self.scales),
         )
 
-    # def forward(self, pixel_values, labels=None, return_weights=False):
+        self.device=device
 
-    #     B, H, W, C = pixel_values.shape
-    #     device = pixel_values.device
-
-    #     logits_per_scale = []
-
-    #     with torch.no_grad():  # freeze segmentation
-    #         for s in self.scales:
-
-    #             # 1️⃣ Resize full scene
-    #             Hs = int(H * s)
-    #             Ws = int(W * s)
-
-    #             img_scaled = F.interpolate(
-    #                 torch.moveaxis(pixel_values,3,1),
-    #                 size=(Hs, Ws),
-    #                 mode="bilinear",
-    #                 align_corners=False
-    #             )
-
-    #             # 2️⃣ Sliding window inference
-    #             logits_scaled = sliding_window_inference(
-    #                 self.segformer,
-    #                 img_scaled,
-    #                 window=512,
-    #                 stride=256,
-    #                 device=device
-    #             )
-
-    #             # 3️⃣ Resize logits back to original resolution
-    #             logits_resized = F.interpolate(
-    #                 logits_scaled,
-    #                 size=(H, W),
-    #                 mode="bilinear",
-    #                 align_corners=False
-    #             )
-
-    #             # 4️⃣ Normalize per scale
-    #             logits_resized = logits_resized / (
-    #                 logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
-    #             )
-
-    #             logits_per_scale.append(logits_resized)
-
-    #     # 5️⃣ Stack
-    #     stacked_logits = torch.cat(logits_per_scale, dim=1)
-
-    #     # 6️⃣ Fuse
-    #     fused_logits, weights = self.fusion(stacked_logits)
-
-    #     print(f"Weights: {weights.mean(dim=0).squeeze(-1).squeeze(-1)}")
-    #     print('---')
-
-    #     if return_weights:
-    #         return (
-    #             SemanticSegmenterOutput(
-    #                 loss=None,
-    #                 logits=fused_logits,
-    #                 hidden_states=None,
-    #                 attentions=None,
-    #             ),
-    #             weights
-    #         )
-    #     else:
-    #         return SemanticSegmenterOutput(
-    #             loss=None,
-    #             logits=fused_logits,
-    #             hidden_states=None,
-    #             attentions=None,
-    #         )
     def forward(self, pixel_values, labels=None, return_weights=False):
 
         B, H, W, C = pixel_values.shape
         device = pixel_values.device
 
-        scale_descriptors = []
-        logits_cache = []
+        logits_per_scale = []
 
-        with torch.no_grad():
-
+        with torch.no_grad():  # freeze segmentation
             for s in self.scales:
 
+                # 1️⃣ Resize full scene
                 Hs = int(H * s)
                 Ws = int(W * s)
 
                 img_scaled = F.interpolate(
-                    pixel_values.permute(0,3,1,2),
+                    torch.moveaxis(pixel_values,3,1),
                     size=(Hs, Ws),
                     mode="bilinear",
                     align_corners=False
                 )
 
+                # 2️⃣ Sliding window inference
                 logits_scaled = sliding_window_inference(
                     self.segformer,
                     img_scaled,
                     window=512,
-                    stride=512,
+                    stride=256,
                     device=device
                 )
 
+                # 3️⃣ Resize logits back to original resolution
                 logits_resized = F.interpolate(
                     logits_scaled,
                     size=(H, W),
@@ -1112,30 +1048,22 @@ class MultiScaleFusionModel(nn.Module):
                     align_corners=False
                 )
 
+                # 4️⃣ Normalize per scale
                 logits_resized = logits_resized / (
                     logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
                 )
 
-                # Store small descriptor only
-                desc = F.adaptive_avg_pool2d(logits_resized, 1)
-                scale_descriptors.append(desc)
+                logits_per_scale.append(logits_resized)
 
-                # Temporarily store logits for fusion
-                logits_cache.append(logits_resized)
+        # 5️⃣ Stack
+        stacked_logits = torch.cat(logits_per_scale, dim=1)
 
-        # Compute weights from descriptors (tiny tensor)
-        scale_descriptors = torch.cat(scale_descriptors, dim=1)  # [B, K*C, 1, 1]
-        weights = torch.sigmoid(self.fusion.net(scale_descriptors))
-        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+        # 6️⃣ Fuse
+        fused_logits, weights = self.fusion(stacked_logits)
 
-        # Fuse incrementally
-        fused_logits = 0
-        for k in range(len(self.scales)):
-            fused_logits = fused_logits + weights[:, k:k+1] * logits_cache[k]
-
-        del logits_cache  # free memory immediately
-
-        # print(f"Weights: {weights.mean(dim=0).squeeze()}")
+        # print(f"Weights: {weights.mean(dim=0).squeeze(-1).squeeze(-1)}")
+        print(f"Weights: {weights.mean(dim=(0,2,3))}")
+        print('---')
 
         if return_weights:
             return (
@@ -1154,12 +1082,146 @@ class MultiScaleFusionModel(nn.Module):
                 hidden_states=None,
                 attentions=None,
             )
+    # def forward(self, pixel_values, labels=None, return_weights=False):
 
+    #     B, H, W, C = pixel_values.shape
+    #     device = pixel_values.device
+
+    #     scale_descriptors = []
+    #     logits_cache = []
+
+    #     with torch.no_grad():
+
+    #         for s in self.scales:
+
+    #             Hs = int(H * s)
+    #             Ws = int(W * s)
+
+    #             img_scaled = F.interpolate(
+    #                 pixel_values.permute(0,3,1,2),
+    #                 size=(Hs, Ws),
+    #                 mode="bilinear",
+    #                 align_corners=False,
+    #             )
+
+    #             logits_scaled = sliding_window_inference(
+    #                 self.segformer,
+    #                 img_scaled,
+    #                 window=512,
+    #                 stride=512,
+    #                 device=device
+    #             )
+
+    #             logits_resized = F.interpolate(
+    #                 logits_scaled,
+    #                 size=(H, W),
+    #                 mode="bilinear",
+    #                 align_corners=False
+    #             )
+
+    #             logits_resized = logits_resized / (
+    #                 logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
+    #             )
+
+    #             # Store small descriptor only
+    #             desc = F.adaptive_avg_pool2d(logits_resized, 1)
+    #             scale_descriptors.append(desc)
+
+    #             # Temporarily store logits for fusion
+    #             logits_cache.append(logits_resized)
+
+    #     # Compute weights from descriptors (tiny tensor)
+    #     scale_descriptors = torch.cat(scale_descriptors, dim=1)  # [B, K*C, 1, 1]
+    #     weights = torch.sigmoid(self.fusion.net(scale_descriptors))
+    #     weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+
+    #     # Fuse incrementally
+    #     fused_logits = 0
+    #     for k in range(len(self.scales)):
+    #         fused_logits = fused_logits + weights[:, k:k+1] * logits_cache[k]
+
+    #     del logits_cache  # free memory immediately
+
+    #     print(f"Weights: {weights.mean(dim=0).squeeze()}")
+
+    #     if return_weights:
+    #         return (
+    #             SemanticSegmenterOutput(
+    #                 loss=None,
+    #                 logits=fused_logits,
+    #                 hidden_states=None,
+    #                 attentions=None,
+    #             ),
+    #             weights
+    #         )
+    #     else:
+    #         return SemanticSegmenterOutput(
+    #             loss=None,
+    #             logits=fused_logits,
+    #             hidden_states=None,
+    #             attentions=None,
+    #         )
 
     @classmethod
-    def from_pretrained(cls, model):
-        print("Yeah!")
-        quit()
+    def from_pretrained(
+        cls,
+        segformer_model_name_or_path,
+        scales,
+        fusion_checkpoint=None,
+        num_labels=2,
+        device=None,
+        **kwargs
+    ):
+        """
+        Load a pretrained SegFormer and wrap it with the fusion module.
+
+        Args:
+            segformer_model_name_or_path (str):
+                HuggingFace model name or local checkpoint path.
+            scales (list[float]):
+                List of scale factors.
+            fusion_checkpoint (str, optional):
+                Path to saved fusion model weights.
+            num_labels (int):
+                Number of segmentation classes.
+            map_location (str or torch.device):
+                Device for loading checkpoints.
+            **kwargs:
+                Extra args forwarded to HF from_pretrained.
+
+        Returns:
+            MultiScaleFusionModel
+        """
+
+        # 1️⃣ Load pretrained SegFormer
+        segformer = SegformerForSemanticSegmentation.from_pretrained(
+            segformer_model_name_or_path,
+            num_labels=num_labels,
+            ignore_mismatched_sizes=True,
+            **kwargs
+        )
+
+        # 2️⃣ Build fusion model wrapper
+        model = cls(
+            segformer=segformer,
+            scales=scales,
+            device=device,
+        )
+
+        # 3️⃣ Optionally load fusion weights
+        if fusion_checkpoint is not None:
+            # state_dict = torch.load(
+            #     os.path.join(fusion_checkpoint, 'model.safetensors'), 
+            #     map_location=map_location, 
+            #     weights_only=False,
+            #     )
+            # model.load_state_dict(state_dict, strict=False)
+            ckpt_path = os.path.join(fusion_checkpoint, "model.safetensors")
+
+            state_dict = load_file(ckpt_path, device=device)
+
+            model.load_state_dict(state_dict, strict=False)
+        return model.to(device)
 
 
 if __name__ == "__main__":
