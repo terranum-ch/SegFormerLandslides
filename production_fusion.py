@@ -235,6 +235,7 @@ def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_pal
     pos_ls = np.argwhere(img_arr)
 
     mask_clusters = np.zeros(img_arr.shape)
+    rgb_clusters = np.zeros((mask_clusters.shape[0], mask_clusters.shape[1], 4))
 
     if len(pos_ls) > 0:
         # create cluster map
@@ -266,7 +267,6 @@ def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_pal
 
         # saving image version
         if do_save_img:
-            rgb_clusters = np.zeros((mask_clusters.shape[0], mask_clusters.shape[1], 4))
             lst_clusters = set(keep_clusters)
             distinct_colors_rgb8 = [(x, y, z, 255) for [x,y,z] in color_palette]
 
@@ -412,11 +412,11 @@ def production(args):
         src_preds_img = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
         src_probas_mask = os.path.join(dest_probas_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
 
-        # for i_weight in range(weights_fusion.shape[0]):
-        #     src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
-        #     tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-        #     src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
-        #     tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
+        for i_weight in range(weights_fusion.shape[0]):
+            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
+            tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
+            tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
 
         if KEEP_MASK_BIN:
             tiff.imwrite(src_preds_mask, pred_mask.astype(np.uint8), compression="zstd", compressionargs={"level": 9})

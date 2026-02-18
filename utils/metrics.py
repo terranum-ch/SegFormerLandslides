@@ -127,13 +127,13 @@ def confusion_matrix_numpy(y_true, y_pred, num_classes):
     cm = np.bincount(
         num_classes * y_true + y_pred,
         minlength=num_classes**2
-    ).reshape(num_classes, num_classes)
+    ).reshape(num_classes, num_classes).astype(np.uint64)
 
     return cm
 
 
 def compute_cm_from_dict(dict_preds_lbls, num_classes=2):
-    cf = np.zeros((len(dict_preds_lbls), num_classes, num_classes))
+    cf = np.zeros((len(dict_preds_lbls), num_classes, num_classes), dtype=np.uint64)
 
     for id_val, (preds, labels) in enumerate(dict_preds_lbls.values()):
         cf[id_val, :,:] = confusion_matrix_numpy(labels, preds, 2)

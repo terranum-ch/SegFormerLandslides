@@ -225,6 +225,7 @@ def training(args):
 
         # Others
         fp16=True,                          # Mixed precision (if GPU supports)
+        # prediction_loss_only=True,
         gradient_accumulation_steps=1,      # Increase effective batch size if needed
         dataloader_num_workers=NUM_WORKERS,           # Adjust according to CPU cores
         disable_tqdm=False,

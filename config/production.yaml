@@ -30,8 +30,8 @@ predictions:
   model_seg_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
   model_fus_dir: results/training/20260216_112606_fusion_20_epochs_test
   # model_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
-  batch_size: 4
-  threshold_preds: 0.3
+  batch_size: 2
+  threshold_preds: 0.5
   threshold_grouping: 0.3
   tile_size: 2048
   stride: 1024

@@ -1,10 +1,11 @@
-import torch
 import numpy as np
 import os
 from math import prod
 import time
+import psutil
 from tqdm import tqdm
 from transformers import Trainer, SegformerForSemanticSegmentation
+import torch
 from torch.utils.data import default_collate
 from torch.utils.data import Subset
 from torch import nn
@@ -17,6 +18,7 @@ from transformers.models.segformer.modeling_segformer import (
     SemanticSegmenterOutput,
 )
 
+from PIL import Image
 from .metrics import compute_metrics, compute_cm_from_dict
 
 # for evaluation_loop overwrite
@@ -285,30 +287,26 @@ class TrainValMetricsTrainer(Trainer):
     #             if batch_size is None:
     #                 batch_size = observed_batch_size
 
-    #         # -----------------------------
-    #         # ------- custom lines --------
-    #         # -----------------------------
+    #         # # -----------------------------
+    #         # # ------- custom lines --------
+    #         # # -----------------------------
 
-    #         # Prediction step
-    #         #   remove filename from the inputs before giving it to the model
-    #         # filename_in = 'filename' in inputs.keys()
-    #         # if filename_in: 
+    #         # # Prediction step
 
-    #         filenames = inputs['filename']
-    #         inputs = {k:v for k,v in inputs.items() if k != 'filename'}
-    #         losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+    #         # filenames = inputs['filename']
+    #         # inputs = {k:v for k,v in inputs.items() if k != 'filename'}
+    #         # losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
 
-    #         #   split batches to add each sample
-    #         # if filename_in:
-    #         preds = self.logits_to_preds(logits)
-    #         for sample_id in range(preds.shape[0]):
-    #             self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
-    #         labels_cpu = labels.cpu().detach().clone()
-    #         dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
-    #         self.confmat += compute_cm_from_dict(dict_conf_mat)
+    #         # #   split batches to add each sample
+    #         # preds = self.logits_to_preds(logits)
+    #         # for sample_id in range(preds.shape[0]):
+    #         #     self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
+    #         # labels_cpu = labels.cpu().detach().clone()
+    #         # dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
+    #         # self.confmat += compute_cm_from_dict(dict_conf_mat)
                 
-    #         # -----------------------------
-    #         # -----------------------------
+    #         # # -----------------------------
+    #         # # -----------------------------
             
     #         main_input_name = getattr(self.model, "main_input_name", "input_ids")
     #         inputs_decode = (
@@ -429,6 +427,204 @@ class TrainValMetricsTrainer(Trainer):
 
     #     return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
 
+    # def evaluation_loop(
+    #     self,
+    #     dataloader,
+    #     description,
+    #     prediction_loss_only=None,
+    #     ignore_keys=None,
+    #     metric_key_prefix="eval",
+    # ):
+    #     args = self.args
+
+    #     prediction_loss_only = (
+    #         prediction_loss_only
+    #         if prediction_loss_only is not None
+    #         else args.prediction_loss_only
+    #     )
+
+    #     model = self._wrap_model(self.model, training=False, dataloader=dataloader)
+
+    #     if hasattr(model, "eval"):
+    #         model.eval()
+
+    #     logger.info(f"\n***** Running {description} *****")
+    #     if has_length(dataloader):
+    #         logger.info(f"  Num examples = {self.num_examples(dataloader)}")
+    #     logger.info(f"  Batch size = {self.args.eval_batch_size}")
+
+    #     # Reset confusion matrix
+    #     self.confmat = np.zeros((2,2), dtype=np.int64)
+
+    #     observed_num_examples = 0
+    #     total_loss = 0.0
+    #     n_loss_steps = 0
+
+    #     for step, inputs in tqdm(enumerate(dataloader), total=len(dataloader)):
+
+    #         observed_batch_size = find_batch_size(inputs)
+    #         if observed_batch_size is not None:
+    #             observed_num_examples += observed_batch_size
+
+    #         # Remove filename before model call
+    #         filenames = inputs.pop("filename", None)
+
+    #         with torch.no_grad():
+    #             loss, logits, labels = self.prediction_step(
+    #                 model,
+    #                 inputs,
+    #                 prediction_loss_only,
+    #                 ignore_keys=ignore_keys,
+    #             )
+
+    #         if loss is not None:
+    #             total_loss += loss.mean().item()
+    #             n_loss_steps += 1
+
+    #         if logits is not None and labels is not None:
+    #             preds = self.logits_to_preds(logits)
+    #             labels_cpu = labels.cpu().numpy()
+
+    #             for b in range(preds.shape[0]):
+    #                 # self.confmat += compute_cm(preds[b], labels_cpu[b])
+    #                 dict_conf_mat = {x: (preds[b], labels_cpu[b]) for x in range(preds.shape[0])}
+    #                 # val = 
+    #                 # val = val.astype(np.uint64)
+    #                 self.confmat = self.confmat + compute_cm_from_dict(dict_conf_mat)
+
+    #         # Free memory immediately
+    #         del logits, labels, inputs
+    #         torch.cuda.empty_cache()
+
+    #         self.control = self.callback_handler.on_prediction_step(
+    #             args, self.state, self.control
+    #         )
+
+    #     # -------------------------
+    #     # Compute metrics from confmat
+    #     # -------------------------
+
+    #     tp = np.diag(self.confmat)
+    #     fp = self.confmat.sum(axis=0) - tp
+    #     fn = self.confmat.sum(axis=1) - tp
+
+    #     iou = tp / (tp + fp + fn + 1e-6)
+    #     mean_iou = np.nanmean(iou)
+
+    #     metrics = {
+    #         f"{metric_key_prefix}_mean_iou": float(mean_iou),
+    #     }
+
+    #     if n_loss_steps > 0:
+    #         metrics[f"{metric_key_prefix}_loss"] = total_loss / n_loss_steps
+
+    #     return EvalLoopOutput(
+    #         predictions=None,
+    #         label_ids=None,
+    #         metrics=metrics,
+    #         num_samples=observed_num_examples,
+    #     )
+
+    def evaluation_loop(
+        self,
+        dataloader,
+        description,
+        prediction_loss_only=None,
+        ignore_keys=None,
+        metric_key_prefix="eval",
+    ):
+        import torch
+        from torch.nn import functional as F
+
+        model = self._wrap_model(self.model, training=False)
+        model.eval()
+
+        total_loss = 0.0
+        n_samples = 0
+
+        # Accumulators for metrics
+        # total_intersection = 0.0
+        # total_union = 0.0
+        # total_dice_intersection = 0.0
+        # total_dice_sum = 0.0
+        metrics = {}
+        for step, inputs in tqdm(enumerate(dataloader), total=len(dataloader)):
+            inputs = self._prepare_inputs(inputs)
+
+            with torch.no_grad():
+            #     outputs = model(**inputs)
+
+            # loss = outputs.loss
+            # logits = outputs.logits
+            # labels = inputs["labels"]
+                loss, logits, labels = self.prediction_step(
+                    model,
+                    inputs,
+                    prediction_loss_only,
+                    ignore_keys=ignore_keys,
+                )
+            batch_size = labels.shape[0]
+            total_loss += loss.item() * batch_size
+            n_samples += batch_size
+
+            # Convert logits to predictions
+            preds = torch.argmax(logits, dim=1)
+
+            if step == 0:
+                metrics = {key: float(val) for key, val in self.compute_metrics(
+                    EvalPrediction(predictions=logits.cpu(), label_ids=labels.cpu())
+                ).items()}
+            else:
+                for key, val in self.compute_metrics(EvalPrediction(predictions=logits.cpu(), label_ids=labels.cpu())).items():
+                    metrics[key] += float(val)
+
+            # Flatten
+            preds = preds.view(-1)
+            labels = labels.view(-1)
+
+            # Remove ignore index if any (e.g. 255)
+            mask = labels != 255
+            preds = preds[mask]
+            labels = labels[mask]
+
+            # # Compute IoU + Dice globally
+            # intersection = (preds == labels).float().sum()
+            # union = torch.numel(preds)
+
+            # total_intersection += intersection.item()
+            # total_union += union
+
+            # # Dice
+            # total_dice_intersection += (2 * intersection).item()
+            # total_dice_sum += (union + union)
+
+            # 🔥 IMPORTANT: free memory
+            # del outputs, logits, preds, labels
+            del logits, preds, labels
+            torch.cuda.empty_cache()
+
+        # Final metrics
+        
+        metrics = {f"{metric_key_prefix}_{key}": float(val / n_samples) for key,val in metrics.items()}
+        # mean_iou = total_intersection / total_union
+        # mean_dice = total_dice_intersection / total_dice_sum
+
+        # metrics = {
+        #     f"{metric_key_prefix}_loss": total_loss / n_samples,
+        #     f"{metric_key_prefix}_mean_iou": mean_iou,
+        #     f"{metric_key_prefix}_mean_dice": mean_dice,
+        # }
+
+        return type(
+            "EvalLoopOutput",
+            (),
+            {
+                "predictions": None,
+                "label_ids": None,
+                "metrics": metrics,
+                "num_samples": n_samples,
+            },
+        )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # if hasattr(inputs, 'labels'):
@@ -767,6 +963,7 @@ class ScaleAttention(nn.Module):
 
 #         return fused, weights
 
+
 # class MultiScaleSegformer(SegformerPreTrainedModel):
 #     def __init__(self, config):
 #         super().__init__(config)
@@ -903,6 +1100,7 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
 
     return output / counter
 
+
 def multiscale_logits(model, image_2048, scales, device="cuda"):
     """
     image_2048: [1, 3, 2048, 2048]
@@ -951,48 +1149,49 @@ def multiscale_logits(model, image_2048, scales, device="cuda"):
     return logits_per_scale
 
 # class ScaleAttention(nn.Module):
-#     def __init__(self, n_scales, n_classes):
-#         super().__init__()
-#         self.n_scales = n_scales
-#         self.n_classes = n_classes
+    def __init__(self, n_scales, n_classes):
+        super().__init__()
+        self.n_scales = n_scales
+        self.n_classes = n_classes
 
-#         in_ch = n_scales * n_classes
+        in_ch = n_scales * n_classes
 
-#         self.net = nn.Sequential(
-#             nn.Conv2d(in_ch, 32, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
-#             nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
-#         )
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
+            nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
+        )
 
-#     def forward(self, stacked_logits):
-#         """
-#         stacked_logits: [B, K*C, H, W]
-#         """
+    def forward(self, stacked_logits):
+        """
+        stacked_logits: [B, K*C, H, W]
+        """
 
-#         B, KC, H, W = stacked_logits.shape
-#         K = self.n_scales
-#         C = self.n_classes
+        B, KC, H, W = stacked_logits.shape
+        K = self.n_scales
+        C = self.n_classes
 
-#         # === Compute class-aware raw weights ===
-#         raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
+        # === Compute class-aware raw weights ===
+        raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
 
-#         # reshape -> [B, K, C, 1, 1]
-#         weights = raw_weights.view(B, K, C, 1, 1)
+        # reshape -> [B, K, C, 1, 1]
+        weights = raw_weights.view(B, K, C, 1, 1)
 
-#         # Sigmoid gating
-#         weights = torch.sigmoid(weights)
+        # Sigmoid gating
+        weights = torch.sigmoid(weights)
 
-#         # Normalize across scales PER CLASS
-#         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+        # Normalize across scales PER CLASS
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
 
-#         # === Separate logits ===
-#         logits = stacked_logits.view(B, K, C, H, W)
+        # === Separate logits ===
+        logits = stacked_logits.view(B, K, C, H, W)
 
-#         # === Weighted fusion per class ===
-#         fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
+        # === Weighted fusion per class ===
+        fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
 
-#         return fused, weights
+        return fused, weights
+
 
 class MultiScaleFusionModel(nn.Module):
     def __init__(self, segformer, scales, device=None):
@@ -1053,8 +1252,17 @@ class MultiScaleFusionModel(nn.Module):
                     logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
                 )
 
+                # temp_final = np.moveaxis(torch.softmax(logits_resized[0,...], dim=1).cpu().numpy(), 0, 2)
+                # temp_final = temp_final[...,1]
+                # temp_final = (np.clip(temp_final, 0, 1) * 255).astype(np.uint8)
+                # temp_final[temp_final > 0.5] = 1
+                # Image.fromarray(temp_final).save(
+                #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image_{s}.tif')
+                # )
+
                 logits_per_scale.append(logits_resized)
 
+        # quit()
         # 5️⃣ Stack
         stacked_logits = torch.cat(logits_per_scale, dim=1)
 
@@ -1063,6 +1271,7 @@ class MultiScaleFusionModel(nn.Module):
 
         # print(f"Weights: {weights.mean(dim=0).squeeze(-1).squeeze(-1)}")
         print(f"Weights: {weights.mean(dim=(0,2,3))}")
+        print(psutil.virtual_memory().percent)
         print('---')
 
         if return_weights:
@@ -1161,6 +1370,7 @@ class MultiScaleFusionModel(nn.Module):
     #             hidden_states=None,
     #             attentions=None,
     #         )
+
 
     @classmethod
     def from_pretrained(

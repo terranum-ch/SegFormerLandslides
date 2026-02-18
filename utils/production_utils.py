@@ -79,9 +79,10 @@ def mirror_pad_image_fusion(img, tile_size, stride):
     """
     H, W = img.shape[:2]
 
-    base_pad = (tile_size - 512) // 2
-    pad_h = (stride - (H - 512) % stride) % stride
-    pad_w = (stride - (W - 512) % stride) % stride
+    # base_pad = (tile_size - 2048) // 2
+    base_pad = 0
+    pad_h = (stride - (H - tile_size) % stride) % stride
+    pad_w = (stride - (W - tile_size) % stride) % stride
 
     padded = np.pad(
         img,
@@ -209,7 +210,8 @@ def predict_batch_array_fusion(
     # assert batch.ndim == 4 and batch.shape[-1] == 3
 
     _,  H, W, _ = batch.shape
-    # batch = batch.permute(0, 1, 4, 2, 3)                  # (B, 3, H, W)
+    # batch = batch.permute(0, 3, 1, 2)                  # (B, 3, H, W)
+
     batch = batch / 255.0
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,1,1,3)
     std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,1,1,3)
@@ -295,13 +297,19 @@ def predict_with_batch_fusion(
     img_arr = np.array(image)[..., :3]
 
     img_padded, _, _ = mirror_pad_image_fusion(img_arr, tile_size, stride)
+                
+    # Image.fromarray(img_padded, mode='RGB').save(
+    #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image.tif')
+    # )
+    # quit()
+
     H_original, W_original  = img_arr.shape[:2]
     H, W = img_padded.shape[:2]
     
     # prepare arrays
     # prob_acc = torch.zeros((H,W), device=model.device)
-    # weight_acc = torch.zeros((H,W), device=model.device)
-    # weights_fusion_acc = torch.zeros((4,H,W), device=model.device)
+    weight_acc = torch.zeros((H,W))
+    weights_fusion_acc = torch.zeros((4,H,W))
     prob_acc = torch.zeros((H,W))
     weight_acc = torch.zeros((H,W))
     weights_fusion_acc = torch.zeros((4,H,W))
@@ -318,8 +326,7 @@ def predict_with_batch_fusion(
         x0 = min(x, W - tile_size)
         y0 = min(y, H - tile_size)
         tile = img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :]
-        
-
+                
         # # extract different scales:
         # imgs = []
         # for s in scales:
@@ -337,6 +344,12 @@ def predict_with_batch_fusion(
 
         # Crop region (handles border tiles automatically)
         if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
+            
+            # Image.fromarray(batch[0,...].cpu().numpy().astype(np.uint8), mode='RGB').save(
+            #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image.tif')
+            # )
+            # quit()
+
             logits, weights_fusion = predict_batch_array_fusion(
                 model, 
                 batch, 
@@ -348,7 +361,7 @@ def predict_with_batch_fusion(
                 xi, yi = initial_poses[i]
                 prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))
                 weight_acc[yi:yi+tile_size, xi:xi+tile_size] += 1
-                # weights_fusion_acc[:, yi:yi+tile_size, xi:xi+tile_size] += weights_fusion[i, :].reshape((batch_size, tile_size, tile_size))
+                weights_fusion_acc[:, yi:yi+tile_size, xi:xi+tile_size] += weights_fusion[i, :].reshape((4, tile_size, tile_size)).cpu()
 
             # batch = torch.zeros((batch_size, len(scales), tile_size, tile_size, 3), device=model.device)
             batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
@@ -359,7 +372,7 @@ def predict_with_batch_fusion(
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
 
-    # final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
+    final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
 
     src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.tif'
     src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.tif'
@@ -375,7 +388,7 @@ def predict_with_batch_fusion(
     if do_show:
         plt.imshow(Image.fromarray(rgb_labels.astype(np.uint8), mode="RGB"))
 
-    return final_labels, rgb_labels, final_prob, None#, final_weights_fusion_acc
+    return final_labels, rgb_labels, final_prob, final_weights_fusion_acc
 
 
 def predict_with_batch(image, model, img_path=None, batch_size=8, tile_size=512, stride=256, th=0.5, do_show=True, do_save=True, do_save_mask_as_img=True):
