@@ -75,10 +75,10 @@ def show_mean_iou_dice(history, saving_loc, do_show=False, do_save=True):
         if "train_pa" in entry:
             train_mdice.append(entry["train_mean_dice"])
 
-        if "eval_pa" in entry:
+        if "eval_mean_iou" in entry:
             val_miou.append(entry["eval_mean_iou"])
 
-        if "eval_loss" in entry:
+        if "eval_mean_dice" in entry:
             val_mdice.append(entry["eval_mean_dice"])
 
     # -----------------------

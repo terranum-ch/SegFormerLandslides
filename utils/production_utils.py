@@ -285,8 +285,6 @@ def predict_with_batch_fusion(
         tile_size=2048, 
         stride=1024, 
         th=0.5, 
-        scales=[1.0, 0.75, 0.5, 0.25], 
-        # signal_cardinality=512, 
         do_show=True, 
         do_save=True, 
         do_save_mask_as_img=True

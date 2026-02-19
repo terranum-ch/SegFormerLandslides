@@ -326,7 +326,6 @@ def production(args):
     AREA = args.downloader.area
     YEAR = args.downloader.year
     DEST_PREDS = args.predictions.destination
-    # MODEL_DIR = args.predictions.model_dir
     MODEL_SEG_DIR = args.predictions.model_seg_dir
     MODEL_FUS_DIR = args.predictions.model_fus_dir
     BATCH_SIZE = args.predictions.batch_size
@@ -378,17 +377,16 @@ def production(args):
 
     # load model
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # ckpt_path = load_latest_checkpoint(MODEL_DIR)
-    # model = MultiScaleFusionModel.from_pretrained(ckpt_path)
-    # model.to(DEVICE)
-    # model.eval()
+    # print(load_latest_checkpoint(MODEL_SEG_DIR))
+    # quit()
     model  = MultiScaleFusionModel.from_pretrained(
         segformer_model_name_or_path=load_latest_checkpoint(MODEL_SEG_DIR),
-        scales=[1.0, 0.75, 0.5, 0.25],
+        scales=SCALES,
         fusion_checkpoint=load_latest_checkpoint(MODEL_FUS_DIR),
         num_labels=2,
         device=DEVICE,
         )
+    model = model.to(DEVICE)
     model.eval()
 
     for _, src_img in tqdm(enumerate(lst_tiles_src), total=len(lst_tiles_src), desc="Processing tiles"):
@@ -402,7 +400,6 @@ def production(args):
             tile_size=TILE_SIZE,
             stride=STRIDE,
             th=THRESHOLD_PREDS, 
-            scales=SCALES,
             do_show=False,
             do_save=False,
             do_save_mask_as_img=False,
@@ -436,24 +433,6 @@ def production(args):
             proba_img = (np.clip(proba_img, 0, 1) * 255).astype(np.uint8)
 
             tiff.imwrite(src_probas_mask, proba_img, compression="zstd", compressionargs={"level": 9})
-
-        # pred_mask_arr, src_pred_mask, src_pred_img, src_proba_mask = prediction(
-        #     src_img=src_img,
-        #     src_inter=dest_inter_dir,
-        #     src_dest_preds=dest_preds_dir, 
-        #     src_dest_probas=dest_probas_dir,
-        #     resolutions=RESOLUTIONS, 
-        #     model_dir=MODEL_DIR, 
-        #     batch_size=BATCH_SIZE,
-        #     tile_size=TILE_SIZE,
-        #     stride=STRIDE,
-        #     threshold_proba=THRESHOLD_PREDS, 
-        #     threshold_grouping=THRESHOLD_GROUPING,
-        #     do_save_mask=KEEP_MASK_BIN,
-        #     do_save_img=KEEP_MASK_IMG,
-        #     do_save_inter=KEEP_INTERMED_FILES,
-        #     do_save_probas=KEEP_PROBAS,
-        #     )
 
         # === VECTORIZATION ===
         # =====================
@@ -526,4 +505,3 @@ if __name__ == "__main__":
         args = OmegaConf.load('config/production.yaml')
 
     production(args)
-
