@@ -221,7 +221,7 @@ class SegmentationDataset(Dataset):
             mask = augmented["mask"]
 
         if self.processor is not None:
-            inputs = self.processor(images=image, segmentation_maps=mask, return_tensors="pt")
+            inputs = self.processor(images=image, segmentation_maps=mask.squeeze(-1), return_tensors="pt")
             inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)
             inputs["labels"] = inputs["labels"].squeeze(0)
             inputs['filename'] = self.images[idx]

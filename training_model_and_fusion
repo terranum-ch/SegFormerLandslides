@@ -11,6 +11,8 @@ def train_both(conf):
     print("\n", "="*30)
 
     conf.train.num_epochs = conf.fusion.segmenter.num_epochs
+    conf.train.batch_size = conf.fusion.segmenter.batch_size
+    conf.train.num_workers = conf.fusion.segmenter.num_workers
     conf.train.is_trained = 'segmenter'
     segmenter_model_dir = training(conf)
 
@@ -20,6 +22,8 @@ def train_both(conf):
     print("\n", "="*30)
 
     conf.train.num_epochs = conf.fusion.fusion.num_epochs
+    conf.train.batch_size = conf.fusion.fusion.batch_size
+    conf.train.num_workers = conf.fusion.fusion.num_workers
     conf.train.is_trained = 'fusion'
     conf.train.pretrained_model = segmenter_model_dir
     # conf.train.pretrained_model = r"results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale"

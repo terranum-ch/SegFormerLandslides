@@ -256,7 +256,10 @@ class TrainValMetricsTrainer(Trainer):
             n_samples += batch_size
 
             # Convert logits to predictions
-            preds = torch.argmax(logits, dim=1).cpu()
+            if logits.shape[-1] < labels.shape[-1]:
+                preds = self.logits_to_preds(logits)
+            else:
+                preds = torch.argmax(logits, dim=1).cpu()
             labels = labels.cpu()
             if step == 0:
                 metrics = {key: val for key, val in self.compute_metrics(

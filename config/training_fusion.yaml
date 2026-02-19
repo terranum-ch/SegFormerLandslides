@@ -1,4 +1,8 @@
 segmenter:
   num_epochs: 50
+  batch_size: 12
+  num_workers: 6
 fusion:
   num_epochs: 20
+  batch_size: 4
+  num_workers: 2

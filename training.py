@@ -20,8 +20,8 @@ from time import time
 from datetime import datetime
 from omegaconf import OmegaConf
 
-from utils.dataset import SegmentationDataset
-from utils.dataset_fusion import SegFusionDataset, DatasetProxy
+# from utils.dataset import SegmentationDataset
+from utils.dataset_fusion import SegmentationDataset, SegFusionDataset, DatasetProxy
 from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleFusionModel
 from utils.metrics import compute_metrics
 from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback, TrainMetricsCallback
@@ -113,11 +113,12 @@ def training(args):
     time_start = time()
 
     # Load model + processor
+    with mute_logging():
+        processor = AutoImageProcessor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512", use_fast=True) if IS_TRAINED == 'segmenter' else None
+    
     if FROM_PRETRAIN or IS_TRAINED == 'fusion':
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
-    with mute_logging():
-        processor = AutoImageProcessor.from_pretrained(PRETRAINED_MODEL, use_fast=True) if IS_TRAINED == 'segmenter' else None
-    
+
     segformer = SegformerForSemanticSegmentation.from_pretrained(
             PRETRAINED_MODEL,
             num_labels=2,

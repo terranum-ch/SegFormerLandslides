@@ -1,6 +1,7 @@
 segmenter:
   # dataset_dir: 'data/dataset_Bern_v2'
   # dataset_dir: 'data/dataset_Longxi_small'
+  dataset_dir: 'data/dataset_Longxi_tiny'
   # dataset_dir: 'data/dataset_Longxi'
   # dataset_dir: 'data/dataset_Longxi_Bern_v2'
   # dataset_dir: 'data/test_dem/dataset_with_dem'
@@ -9,7 +10,7 @@ segmenter:
   # dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
   # dataset_dir: data/dataset_playground_3000
   # dataset_dir: 'data/dataset_multi_res_with_false_pos'
-  dataset_dir: 'data/dataset_playground_multires_6000'
+  # dataset_dir: 'data/dataset_playground_multires_6000'
   trainset_dir: 'data/splitset_Bern_v2_training'
   valset_dir: 'data/splitset_Bern_v2_validation'
   mode: auto # choose auto for dataset or split for training and validation sets
