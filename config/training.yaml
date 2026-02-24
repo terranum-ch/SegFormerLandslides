@@ -4,7 +4,7 @@ output_dir: "results/training"
 output_suffixe: test
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 5
+num_epochs: 1
 batch_size: 2
 num_workers: 2
 learning_rate: 5e-5
@@ -21,7 +21,7 @@ existing_dir: results/training/20260120_112049_50_epochs_Bern_v2_focal_dice_loss
 
 do_data_augmentation: True
 do_da_scaling: False
-do_save_best_preds: False
+do_save_best_preds: True
 
 pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
 # save_preds_lbls: True

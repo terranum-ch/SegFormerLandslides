@@ -1,5 +1,6 @@
-import numpy as np
 import os
+import numpy as np
+import pandas as pd
 from math import prod
 import time
 import psutil
@@ -17,6 +18,7 @@ from transformers.models.segformer.modeling_segformer import (
     SegformerDecodeHead,
     SemanticSegmenterOutput,
 )
+from utils.visualization import show_confusion_matrix
 
 from PIL import Image
 from .metrics import compute_metrics, compute_cm_from_dict
@@ -43,6 +45,19 @@ def collate_with_filename(batch):
     return batch_collated
 
 
+def logits_to_preds(logits, do_upscale=True):
+    # Resize predictions to match label size
+    if do_upscale:
+        logits = torch.nn.functional.interpolate(
+            torch.tensor(logits),
+            size=(logits.shape[-2]*4, logits.shape[-1]*4),   # (H_lbl, W_lbl)
+            mode="bilinear",
+            align_corners=False
+        )
+
+    # Final predicted class mask
+    return logits.argmax(dim=1).cpu().numpy()  # (batch_size, H_lbl, W_lbl)
+    
 def dice_loss(logits, targets, eps=1e-6):
     probs = torch.softmax(logits, dim=1)
     targets_onehot = F.one_hot(targets, num_classes=logits.shape[1]).permute(0, 3, 1, 2)
@@ -95,77 +110,23 @@ class TrainValMetricsTrainer(Trainer):
     def __init__(self, confmat_dir, confmat_buffer_size=1000, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Buffers for storing batch results during an epoch
         self.training_metrics = []
         self.training_losses = []
         self.confmat_dir = confmat_dir
-        self.confmat = np.zeros((2,2), dtype=np.uint64)
-        self.eval_preds = {}
 
-        # # compute weights for loss
-        # dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
-        # count_ls = 0
-        # count_bck = 0
-        # print("Computing weights...")
-        # for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
-        #     inputs = dataset[samp_id]
-        #     labels = inputs['labels']
-        #     count_ls += torch.sum(labels == 1)
-        #     count_bck += torch.sum(labels == 0)
-        
-        # tot = count_ls + count_bck
-        # self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
-        # print(f"Weights:\n\tBackground: {self.class_weights[0]}\n\tLandslide: {self.class_weights[1]}")
+        self.cf_dir_img = os.path.join(confmat_dir, "images")
+        self.cf_dir_val = os.path.join(confmat_dir, "values")
 
-
-    @staticmethod
-    def logits_to_preds(logits):
-        # Resize predictions to match label size
-        if 2048 not in logits.shape:
-            logits = torch.nn.functional.interpolate(
-                torch.tensor(logits),
-                size=(logits.shape[-2]*4, logits.shape[-1]*4),   # (H_lbl, W_lbl)
-                mode="bilinear",
-                align_corners=False
-            )
-
-        # Final predicted class mask
-        return logits.argmax(dim=1).cpu().numpy()  # (batch_size, H_lbl, W_lbl)
+        os.makedirs(confmat_dir, exist_ok=True)
+        os.makedirs(self.cf_dir_img, exist_ok=True)
+        os.makedirs(self.cf_dir_val, exist_ok=True)
     
-    # def training_step(self, model, inputs, num_items_in_batch=None):
-    #     # Standard HF forward pass
-    #     #   remove the filename for training
-    #     inputs = {k: v for k, v in inputs.items() if k not in ["filename"]}
-    #     outputs = model(**inputs)
-    #     loss = outputs.loss
-
-    #     # Compute logits without affecting backward
-    #     with torch.no_grad():
-    #         logits = outputs.logits
-    #         labels = inputs["labels"]
-
-    #     logits = logits.detach().cpu().numpy()
-    #     labels = labels.detach().cpu().numpy().astype(np.uint8)
-    #     # preds = self.logits_to_preds(logits).astype(np.uint8)
-
-    #     # Save them for end-of-epoch metrics
-    #     dict_for_metrics = {'predictions': logits, "label_ids": labels}
-    #     # dict_conf_mat = {x: (preds[x,...], labels[x,...]) for x in range(preds.shape[0])}
-    #     # self.confmat += compute_cm_from_dict(dict_conf_mat)
-
-    #     metrics = compute_metrics(dict_for_metrics)
-    #     self.training_metrics.append(metrics)
-    #     self.training_losses.append(loss.cpu().detach().numpy())
-
-    #     # Standard HF backward
-    #     self.accelerator.backward(loss)
-    #     return loss.detach()
-
     def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
 
         inputs = self._prepare_inputs(inputs)
         labels = inputs["labels"]
+
         # ---- Compute loss AND get outputs ----
         loss, outputs = self.compute_loss(
             model, inputs, return_outputs=True
@@ -176,10 +137,7 @@ class TrainValMetricsTrainer(Trainer):
 
         # ---- Compute training metrics safely ----
         with torch.no_grad():
-            # logits = outputs.logits
             logits = outputs.logits if hasattr(outputs, 'logits') else outputs # (B, C, H, W)
-            # labels = inputs["labels"]
-
             logits = torch.nn.functional.interpolate(
                 logits,
                 size=labels.shape[-2:],
@@ -196,11 +154,9 @@ class TrainValMetricsTrainer(Trainer):
             })
 
         # ---- Log properly (this writes into trainer_state.json) ----
-        # metrics = {f"train_{k}": v for k, v in metrics.items()}
         metrics["train_loss"] = loss.detach().cpu().item()
         self.training_metrics.append(metrics)
         self.training_losses.append(loss.cpu().detach().numpy())
-        # self.log(metrics)
 
         return loss.detach()
 
@@ -220,30 +176,13 @@ class TrainValMetricsTrainer(Trainer):
 
         total_loss = 0.0
         n_samples = 0
-    #         # # -----------------------------
-    #         # # ------- custom lines --------
-    #         # # -----------------------------
 
-    #         # # Prediction step
-
-    #         # filenames = inputs['filename']
-    #         # inputs = {k:v for k,v in inputs.items() if k != 'filename'}
-    #         # losses, logits, labels = self.prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
-
-    #         # #   split batches to add each sample
-    #         # preds = self.logits_to_preds(logits)
-    #         # for sample_id in range(preds.shape[0]):
-    #         #     self.eval_preds[filenames[sample_id]] = preds[sample_id, ...]
-    #         # labels_cpu = labels.cpu().detach().clone()
-    #         # dict_conf_mat = {x: (preds[x,...], labels_cpu[x,...]) for x in range(preds.shape[0])}
-    #         # self.confmat += compute_cm_from_dict(dict_conf_mat)
-                
-    #         # # -----------------------------
-    #         # # -----------------------------
         metrics = {}
+        confmat = np.zeros((2,2), dtype=np.uint64)
         for step, inputs in tqdm(enumerate(dataloader), total=len(dataloader)):
             inputs = self._prepare_inputs(inputs)
-
+            if self.state.epoch == 0:
+                self.preds_filenames.append(inputs['filename'])
             with torch.no_grad():
                 loss, logits, labels = self.prediction_step(
                     model,
@@ -256,10 +195,7 @@ class TrainValMetricsTrainer(Trainer):
             n_samples += batch_size
 
             # Convert logits to predictions
-            if logits.shape[-1] < labels.shape[-1]:
-                preds = self.logits_to_preds(logits)
-            else:
-                preds = torch.argmax(logits, dim=1).cpu()
+            preds = logits_to_preds(logits, do_upscale=logits.shape[-1] < labels.shape[-1])
             labels = labels.cpu()
             if step == 0:
                 metrics = {key: val for key, val in self.compute_metrics(
@@ -270,16 +206,7 @@ class TrainValMetricsTrainer(Trainer):
                     metrics[key] += val * batch_size
 
             dict_conf_mat = {x: (preds[x,...], labels[x,...]) for x in range(preds.shape[0])}
-            self.confmat += compute_cm_from_dict(dict_conf_mat)
-
-            # # Flatten
-            # preds = preds.view(-1)
-            # labels = labels.view(-1)
-
-            # # Remove ignore index if any (e.g. 255)
-            # mask = labels != 255
-            # preds = preds[mask]
-            # labels = labels[mask]
+            confmat += compute_cm_from_dict(dict_conf_mat)
 
             # 🔥 IMPORTANT: free memory
             del logits, preds, labels
@@ -288,6 +215,14 @@ class TrainValMetricsTrainer(Trainer):
         # Final metrics
         metrics = {f"{metric_key_prefix}_{key}": float(val / n_samples) for key,val in metrics.items()}
         metrics[f"{metric_key_prefix}_loss"] = float(total_loss / n_samples)
+
+        # Save confusion matrix
+        show_confusion_matrix(
+            saving_loc=os.path.join(self.cf_dir_img, f"confusion_matrix_ep_{int(self.state.epoch - 1)}.jpg"),
+            conf_mat=confmat,
+            class_labels=['Background', 'Landslide'],
+            )
+        pd.DataFrame(confmat, index=[0,1], columns=[0,1]).to_csv(os.path.join(self.cf_dir_val, f"confusion_matrix_ep_{int(self.state.epoch - 1)}.csv"), sep=';')
 
         return type(
             "EvalLoopOutput",
@@ -319,19 +254,29 @@ class TrainValMetricsTrainer(Trainer):
             align_corners=False
         )
 
-        # ce_loss = F.cross_entropy(
-        #     logits,
-        #     labels,
-        #     weight=self.class_weights,
-        #     ignore_index=255  # very important for segmentation
-        # )
-        f_loss = focal_loss(logits, labels)
+        B, C, H, W = logits.shape
 
-        d_loss = dice_loss(logits, labels)
-        # print("Weighted CE loss: ", ce_loss)
-        # print("Dice loss: ", d_loss)
-        # print("Focal loss: ", f_loss)
-        # loss = ce_loss + 0.5 * d_loss
+        # --------------------------
+        # Label smoothing
+        # --------------------------
+        epsilon = 0.05  # smoothing factor
+
+        # Convert labels to one-hot
+        labels_one_hot = torch.nn.functional.one_hot(
+            labels.long(),
+            num_classes=C
+        )  # (B, H, W, C)
+
+        labels_one_hot = labels_one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+
+        # Apply smoothing
+        labels_smooth = labels_one_hot * (1 - epsilon) + epsilon / C
+
+        # --------------------------
+        # Loss computation
+        # ---
+        f_loss = focal_loss(logits, labels_smooth)
+        d_loss = dice_loss(logits, labels_smooth)
         loss = f_loss + 0.5 * d_loss
 
         return (loss, outputs) if return_outputs else loss
@@ -358,7 +303,6 @@ class ScaleAttention(nn.Module):
         C = self.n_classes
 
         # Compute weights per scale
-        # weights = torch.softmax(self.net(stacked_logits), dim=1)  # [B, K, H, W]
         weights = torch.sigmoid(self.net(stacked_logits))  # [B, K, H, W]   # new
         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)   # new
 
@@ -371,362 +315,6 @@ class ScaleAttention(nn.Module):
         return fused, weights
         
 
-# class MultiScaleSegformer(SegformerPreTrainedModel):
-#     def __init__(self, config):
-#         super().__init__(config)
-
-#         self.segformer = SegformerModel(config)
-#         self.decode_head = SegformerDecodeHead(config)
-
-#         # Freeze backbone
-#         for p in self.segformer.parameters():
-#             p.requires_grad = False
-#         for p in self.decode_head.parameters():
-#             p.requires_grad = False
-
-#         self.scales = [float(s) for s in config.scales]
-#         self.n_scales = len(self.scales)
-#         self.n_classes = config.num_labels
-
-#         self.fusion = ScaleAttention(self.n_scales, self.n_classes)
-
-#         self.post_init()
-
-#     def forward(
-#         self,
-#         pixel_values=None,          # unused but required by Trainer
-#         multspec_img=None,         # [B, K, C, 512, 512]
-#         labels=None,
-#         filename=None,
-#         return_dict=None,
-#         return_weights=False,
-#         **kwargs
-#     ):
-#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-#         _, K, H, W, _ = multspec_img.shape
-#         logits_per_scale = []
-
-#         # === Run SegFormer on each provided scale ===
-#         for k in range(K):
-#             xk = multspec_img[:, k]  # [B, C, 512, 512]
-#             xk = torch.moveaxis(xk, 3, 1)
-
-#             with torch.no_grad():
-#                 outputs = self.segformer(
-#                     xk,
-#                     output_hidden_states=True,
-#                     return_dict=True,
-#                 )
-#                 logits_k = self.decode_head(outputs.hidden_states)
-
-#             logits_k = F.interpolate(
-#                 logits_k, size=(H, W), mode="bilinear", align_corners=False
-#             )
-#             logits_k = logits_k / (logits_k.std(dim=(2,3), keepdim=True) + 1e-6)    # new
-#             logits_per_scale.append(logits_k)
-
-#         # === Fuse ===
-#         stacked = torch.cat(logits_per_scale, dim=1)  # [B, K*C, H, W]
-#         fused_logits, weights = self.fusion(stacked)  # [B, C, H, W]
-
-#         # SegFormer outputs at 1/4 res
-#         logits = F.interpolate(
-#             fused_logits,
-#             scale_factor=0.25,
-#             mode="bilinear",
-#             align_corners=False
-#         )
-#         if return_weights:
-#             return SemanticSegmenterOutput(
-#                 loss=None,
-#                 logits=logits,
-#                 hidden_states=None,
-#                 attentions=None,
-#             ), weights
-#         else:
-#             return SemanticSegmenterOutput(
-#                 loss=None,
-#                 logits=logits,
-#                 hidden_states=None,
-#                 attentions=None,
-#             )
-
-
-# ==================================================================
-
-
-# class ScaleAttention(nn.Module):
-#     def __init__(self, n_scales, n_classes):
-#         super().__init__()
-#         self.n_scales = n_scales
-#         self.n_classes = n_classes
-
-#         in_ch = n_scales * n_classes
-
-#         self.net = nn.Sequential(
-#             nn.Conv2d(in_ch, 32, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.AdaptiveAvgPool2d(1),   # -> [B, 32, 1, 1]
-#             nn.Conv2d(32, n_scales, 1) # -> [B, K, 1, 1]
-#         )
-
-#     def forward(self, stacked_logits):
-#         """
-#         stacked_logits: [B, K*C, H, W]
-#         """
-
-#         B, KC, H, W = stacked_logits.shape
-#         K = self.n_scales
-#         C = self.n_classes
-
-#         # === Compute raw weights ===
-#         weights = torch.sigmoid(self.net(stacked_logits))  # [B, K, 1, 1]
-
-#         # Normalize across scales (no competition pressure)
-#         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
-
-#         # === Separate logits ===
-#         logits = stacked_logits.view(B, K, C, H, W)
-
-#         # === Weighted fusion ===
-#         fused = (weights.unsqueeze(2) * logits).sum(dim=1)  # [B, C, H, W]
-
-#         return fused, weights
-    
-
-# class MultiScaleSegformer(SegformerPreTrainedModel):
-#     def __init__(self, config):
-#         super().__init__(config)
-
-#         self.segformer = SegformerModel(config)
-#         self.decode_head = SegformerDecodeHead(config)
-
-#         # Freeze backbone
-#         for p in self.segformer.parameters():
-#             p.requires_grad = False
-#         for p in self.decode_head.parameters():
-#             p.requires_grad = False
-
-#         self.scales = [float(s) for s in config.scales]
-#         self.n_scales = len(self.scales)
-#         self.n_classes = config.num_labels
-
-#         self.fusion = ScaleAttention(self.n_scales, self.n_classes)
-
-#         self.post_init()
-
-#     def forward(
-#         self,
-#         pixel_values=None,          # unused but required by Trainer
-#         multspec_img=None,          # [B, K, H, W, C]
-#         labels=None,
-#         filename=None,
-#         return_dict=None,
-#         return_weights=False,
-#         **kwargs
-#     ):
-#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-#         B, K, H, W, C = multspec_img.shape
-#         logits_per_scale = []
-
-#         # === Run frozen SegFormer per scale ===
-#         for k in range(K):
-
-#             # [B, H, W, C] -> [B, C, H, W]
-#             xk = multspec_img[:, k].permute(0, 3, 1, 2)
-
-#             with torch.no_grad():
-#                 outputs = self.segformer(
-#                     xk,
-#                     output_hidden_states=True,
-#                     return_dict=True,
-#                 )
-#                 logits_k = self.decode_head(outputs.hidden_states)
-
-#             # Upsample to common resolution (H, W)
-#             logits_k = F.interpolate(
-#                 logits_k,
-#                 size=(H, W),
-#                 mode="bilinear",
-#                 align_corners=False,
-#             )
-
-#             # 🔥 IMPORTANT: Normalize logits per scale
-#             logits_k = logits_k / (logits_k.std(dim=(2,3), keepdim=True) + 1e-6)
-
-#             logits_per_scale.append(logits_k)
-
-#         # === Stack logits ===
-#         stacked = torch.cat(logits_per_scale, dim=1)  # [B, K*C, H, W]
-
-#         # === Fuse ===
-#         fused_logits, weights = self.fusion(stacked)  # [B, C, H, W]
-
-#         # No extra scaling here — keep native resolution
-#         logits = fused_logits
-
-#         print(f"Weights: {weights.mean(dim=0)}")
-
-#         if return_weights:
-#             return (
-#                 SemanticSegmenterOutput(
-#                     loss=None,
-#                     logits=logits,
-#                     hidden_states=None,
-#                     attentions=None,
-#                 ),
-#                 weights
-#             )
-#         else:
-#             return SemanticSegmenterOutput(
-#                 loss=None,
-#                 logits=logits,
-#                 hidden_states=None,
-#                 attentions=None,
-#             )
-
-
-
-# ==================================================================
-
-
-
-# class ScaleAttention(nn.Module):
-#     def __init__(self, n_scales, n_classes):
-#         super().__init__()
-#         self.n_scales = n_scales
-#         self.n_classes = n_classes
-
-#         in_ch = n_scales * n_classes
-
-#         self.net = nn.Sequential(
-#             nn.Conv2d(in_ch, 32, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
-#             nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
-#         )
-
-#     def forward(self, stacked_logits):
-#         """
-#         stacked_logits: [B, K*C, H, W]
-#         """
-
-#         B, KC, H, W = stacked_logits.shape
-#         K = self.n_scales
-#         C = self.n_classes
-
-#         # === Compute class-aware raw weights ===
-#         raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
-
-#         # reshape -> [B, K, C, 1, 1]
-#         weights = raw_weights.view(B, K, C, 1, 1)
-
-#         # Sigmoid gating
-#         weights = torch.sigmoid(weights)
-
-#         # Normalize across scales PER CLASS
-#         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
-
-#         # === Separate logits ===
-#         logits = stacked_logits.view(B, K, C, H, W)
-
-#         # === Weighted fusion per class ===
-#         fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
-
-#         return fused, weights
-
-
-# class MultiScaleSegformer(SegformerPreTrainedModel):
-#     def __init__(self, config):
-#         super().__init__(config)
-
-#         self.segformer = SegformerModel(config)
-#         self.decode_head = SegformerDecodeHead(config)
-
-#         # Freeze backbone
-#         for p in self.segformer.parameters():
-#             p.requires_grad = False
-#         for p in self.decode_head.parameters():
-#             p.requires_grad = False
-
-#         self.scales = [float(s) for s in config.scales]
-#         self.n_scales = len(self.scales)
-#         self.n_classes = config.num_labels
-
-#         self.fusion = ScaleAttention(self.n_scales, self.n_classes)
-
-#         self.post_init()
-
-#     def forward(
-#         self,
-#         pixel_values=None,
-#         multspec_img=None,  # [B, K, H, W, C]
-#         labels=None,
-#         filename=None,
-#         return_dict=None,
-#         return_weights=False,
-#         **kwargs
-#     ):
-#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-#         B, K, H, W, C = multspec_img.shape
-#         logits_per_scale = []
-
-#         for k in range(K):
-
-#             xk = multspec_img[:, k].permute(0, 3, 1, 2)
-
-#             with torch.no_grad():
-#                 outputs = self.segformer(
-#                     xk,
-#                     output_hidden_states=True,
-#                     return_dict=True,
-#                 )
-#                 logits_k = self.decode_head(outputs.hidden_states)
-
-#             logits_k = F.interpolate(
-#                 logits_k,
-#                 size=(H, W),
-#                 mode="bilinear",
-#                 align_corners=False,
-#             )
-
-#             # 🔥 Normalize per scale (prevents dominance)
-#             logits_k = logits_k / (logits_k.std(dim=(2,3), keepdim=True) + 1e-6)
-
-#             logits_per_scale.append(logits_k)
-
-#         stacked = torch.cat(logits_per_scale, dim=1)  # [B, K*C, H, W]
-
-#         fused_logits, weights = self.fusion(stacked)
-
-#         logits = fused_logits  # keep your 0.25 scaling if needed elsewhere
-    
-#         print(f"Weights: {weights.mean(dim=0).squeeze(-1).squeeze(-1)}")
-#         print('---')
-        
-#         if return_weights:
-#             return (
-#                 SemanticSegmenterOutput(
-#                     loss=None,
-#                     logits=logits,
-#                     hidden_states=None,
-#                     attentions=None,
-#                 ),
-#                 weights
-#             )
-#         else:
-#             return SemanticSegmenterOutput(
-#                 loss=None,
-#                 logits=logits,
-#                 hidden_states=None,
-#                 attentions=None,
-#             )
-
-
-# ==================================================================
 
     
 def sliding_window_inference(model, image, window=512, stride=512, device="cuda"):
@@ -734,7 +322,7 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
     image: [1, 3, H, W]
     returns: stitched logits [1, C, H, W]
     """
-
+    overlap = window - stride
     B, _, H, W = image.shape
     C = model.config.num_labels
 
@@ -766,13 +354,20 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
                         mode="bilinear",
                         align_corners=False
                     )
-            
             logits = logits[:, :, :y1-y, :x1-x]
 
-            output[:, :, y:y1, x:x1] += logits
-            counter[:, :, y:y1, x:x1] += 1
+            y2 = y + int(overlap/2) if y != 0 else 0
+            x2 = x + int(overlap/2) if x != 0 else 0
+            y3 = y + window - int(overlap/2)
+            x3 = x + window - int(overlap/2)
+            x0_log = int(overlap/2) if x2 != 0 else 0
+            y0_log = int(overlap/2) if y2 != 0 else 0
+            output[:, :, y2:y3, x2:x3] += logits[:, :, y0_log:window - int(overlap/2), x0_log:window - int(overlap/2)]
 
-    return output / counter
+            # output[:, :, y:y1, x:x1] += logits
+            # counter[:, :, y:y1, x:x1] += 1
+
+    return output# / counter
 
 
 def multiscale_logits(model, image_2048, scales, device="cuda"):
@@ -873,8 +468,6 @@ class MultiScaleFusionModel(nn.Module):
 
         self.segformer = segformer.to(device)
         self.segformer.eval()  # frozen
-        # for p in self.segformer.parameters():
-        #     p.requires_grad = False
 
         self.scales = scales
         self.fusion = ScaleAttention(
@@ -927,125 +520,29 @@ class MultiScaleFusionModel(nn.Module):
                     logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
                 )
 
-                # temp_final = np.moveaxis(torch.softmax(logits_resized[0,...], dim=1).cpu().numpy(), 0, 2)
-                # temp_final = temp_final[...,1]
-                # temp_final = (np.clip(temp_final, 0, 1) * 255).astype(np.uint8)
-                # temp_final[temp_final > 0.5] = 1
-                # Image.fromarray(temp_final).save(
-                #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image_{s}.tif')
-                # )
-
                 logits_per_scale.append(logits_resized)
 
-        # quit()
         # 5️⃣ Stack
         stacked_logits = torch.cat(logits_per_scale, dim=1)
 
         # 6️⃣ Fuse
         fused_logits, weights = self.fusion(stacked_logits)
 
-        # print(f"Weights: {weights.mean(dim=0).squeeze(-1).squeeze(-1)}")
-        print(f"Weights: {weights.mean(dim=(0,2,3))}")
-        print(psutil.virtual_memory().percent)
-        print('---')
+        # print(f"Weights: {weights.mean(dim=(0,2,3))}")
+        # print("RAM used: ", psutil.virtual_memory().percent, "%, \nVRAM used: ", round(torch.cuda.memory_allocated()/10**9, 2), "Go")
+        # print('---')
 
-        if return_weights:
-            return (
-                SemanticSegmenterOutput(
-                    loss=None,
-                    logits=fused_logits,
-                    hidden_states=None,
-                    attentions=None,
-                ),
-                weights
+        output = SemanticSegmenterOutput(
+            loss=None,
+            logits=fused_logits,
+            hidden_states=None,
+            attentions=None,
             )
-        else:
-            return SemanticSegmenterOutput(
-                loss=None,
-                logits=fused_logits,
-                hidden_states=None,
-                attentions=None,
-            )
-    # def forward(self, pixel_values, labels=None, return_weights=False):
+        
+        if return_weights == False:
+            weights = None
 
-    #     B, H, W, C = pixel_values.shape
-    #     device = pixel_values.device
-
-    #     scale_descriptors = []
-    #     logits_cache = []
-
-    #     with torch.no_grad():
-
-    #         for s in self.scales:
-
-    #             Hs = int(H * s)
-    #             Ws = int(W * s)
-
-    #             img_scaled = F.interpolate(
-    #                 pixel_values.permute(0,3,1,2),
-    #                 size=(Hs, Ws),
-    #                 mode="bilinear",
-    #                 align_corners=False,
-    #             )
-
-    #             logits_scaled = sliding_window_inference(
-    #                 self.segformer,
-    #                 img_scaled,
-    #                 window=512,
-    #                 stride=512,
-    #                 device=device
-    #             )
-
-    #             logits_resized = F.interpolate(
-    #                 logits_scaled,
-    #                 size=(H, W),
-    #                 mode="bilinear",
-    #                 align_corners=False
-    #             )
-
-    #             logits_resized = logits_resized / (
-    #                 logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
-    #             )
-
-    #             # Store small descriptor only
-    #             desc = F.adaptive_avg_pool2d(logits_resized, 1)
-    #             scale_descriptors.append(desc)
-
-    #             # Temporarily store logits for fusion
-    #             logits_cache.append(logits_resized)
-
-    #     # Compute weights from descriptors (tiny tensor)
-    #     scale_descriptors = torch.cat(scale_descriptors, dim=1)  # [B, K*C, 1, 1]
-    #     weights = torch.sigmoid(self.fusion.net(scale_descriptors))
-    #     weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
-
-    #     # Fuse incrementally
-    #     fused_logits = 0
-    #     for k in range(len(self.scales)):
-    #         fused_logits = fused_logits + weights[:, k:k+1] * logits_cache[k]
-
-    #     del logits_cache  # free memory immediately
-
-    #     print(f"Weights: {weights.mean(dim=0).squeeze()}")
-
-    #     if return_weights:
-    #         return (
-    #             SemanticSegmenterOutput(
-    #                 loss=None,
-    #                 logits=fused_logits,
-    #                 hidden_states=None,
-    #                 attentions=None,
-    #             ),
-    #             weights
-    #         )
-    #     else:
-    #         return SemanticSegmenterOutput(
-    #             loss=None,
-    #             logits=fused_logits,
-    #             hidden_states=None,
-    #             attentions=None,
-    #         )
-
+        return output, weights
 
     @classmethod
     def from_pretrained(
@@ -1094,12 +591,6 @@ class MultiScaleFusionModel(nn.Module):
 
         # 3️⃣ Optionally load fusion weights
         if fusion_checkpoint is not None:
-            # state_dict = torch.load(
-            #     os.path.join(fusion_checkpoint, 'model.safetensors'), 
-            #     map_location=map_location, 
-            #     weights_only=False,
-            #     )
-            # model.load_state_dict(state_dict, strict=False)
             ckpt_path = os.path.join(fusion_checkpoint, "model.safetensors")
 
             state_dict = load_file(ckpt_path, device=device)
@@ -1108,7 +599,6 @@ class MultiScaleFusionModel(nn.Module):
                 if k.startswith("fusion")
             }
 
-# model.load_state_dict(fusion_state_dict, strict=False)
             model.load_state_dict(fusion_state_dict, strict=False)
         return model.to(device)
 

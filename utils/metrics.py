@@ -120,9 +120,11 @@ def confusion_matrix_numpy(y_true, y_pred, num_classes):
 
     Returns: ndarray (num_classes, num_classes)
     """
-    mask = (y_true >= 0) & (y_true < num_classes)  # valid pixels only
-    y_true = y_true[mask].flatten()
-    y_pred = y_pred[mask].flatten()
+    # mask = (y_true >= 0) & (y_true < num_classes)  # valid pixels only
+    # y_true = y_true[mask].flatten()
+    # y_pred = y_pred[mask].flatten()
+    y_true = y_true.flatten()
+    y_pred = y_pred.flatten()
 
     cm = np.bincount(
         num_classes * y_true + y_pred,

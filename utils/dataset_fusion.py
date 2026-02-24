@@ -148,7 +148,8 @@ class SegFusionDataset(Dataset):
         # image = np.array(Image.open(img_path).convert("RGB"))
         with open(logits_path, 'rb') as f:
             logits = pickle.load(f)
-        mask = np.array(Image.open(mask_path)).astype("int64")
+        mask = rasterio.open(mask_path).read().astype("int64")
+        # mask = np.array(Image.open(mask_path)).astype("int64")
 
         # Apply augmentation
         if self.transform is not None:
@@ -188,6 +189,9 @@ class SegFusionDataset(Dataset):
         }
 
         return inputs
+
+    def get_images(self):
+        return self.images
 
 
 class SegmentationDataset(Dataset):
@@ -240,6 +244,9 @@ class SegmentationDataset(Dataset):
 
         return inputs
     
+    def get_images(self):
+        return self.images
+    
 
 class DatasetProxy:
     def __init__(
@@ -267,6 +274,8 @@ class DatasetProxy:
                 processor=processor,
                 transform=transform,
             )
+        
+        self.images = self.dataset.get_images()
 
     def __len__(self):
         return len(self.dataset)

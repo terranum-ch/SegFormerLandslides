@@ -330,14 +330,14 @@ def production(args):
     MODEL_FUS_DIR = args.predictions.model_fus_dir
     BATCH_SIZE = args.predictions.batch_size
     THRESHOLD_PREDS = args.predictions.threshold_preds
-    THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
-    STRIDE = args.predictions.stride
+    OVERLAP = args.predictions.overlap
+    STRIDE = TILE_SIZE - OVERLAP
     SCALES = args.predictions.scales
-    KEEP_INTERMED_FILES = args.to_keep.intermed
     KEEP_MASK_BIN = args.to_keep.mask_bin
     KEEP_MASK_IMG = args.to_keep.mask_img
     KEEP_PROBAS = args.to_keep.probas
+    KEEP_WEIGHTS = args.to_keep.weights
     KEEP_CLUSTER_BIN = args.to_keep.cluster_bin
     KEEP_CLUSTER_IMG = args.to_keep.cluster_img
 
@@ -377,8 +377,6 @@ def production(args):
 
     # load model
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # print(load_latest_checkpoint(MODEL_SEG_DIR))
-    # quit()
     model  = MultiScaleFusionModel.from_pretrained(
         segformer_model_name_or_path=load_latest_checkpoint(MODEL_SEG_DIR),
         scales=SCALES,
@@ -400,6 +398,7 @@ def production(args):
             tile_size=TILE_SIZE,
             stride=STRIDE,
             th=THRESHOLD_PREDS, 
+            do_keep_weights=KEEP_WEIGHTS,
             do_show=False,
             do_save=False,
             do_save_mask_as_img=False,
@@ -409,30 +408,28 @@ def production(args):
         src_preds_img = os.path.join(dest_preds_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
         src_probas_mask = os.path.join(dest_probas_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
 
-        for i_weight in range(weights_fusion.shape[0]):
-            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
-            tiff.imwrite(src_weights_mask, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-            src_weights_mask = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
-            tiff.imwrite(src_weights_mask, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
+        if KEEP_WEIGHTS:
+            for i_weight in range(weights_fusion.shape[0]):
+                src_weights_mask_f = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_int.tif')
+                src_weights_mask_int = os.path.join(dest_weights_dir, os.path.splitext(os.path.basename(src_img))[0] + f'_weights_scale_{SCALES[i_weight]}_float.tif')
+                tiff.imwrite(src_weights_mask_f, (np.clip(weights_fusion[i_weight,...], 0, 1) * 255).astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+                tiff.imwrite(src_weights_mask_int, weights_fusion[i_weight,...], compression="zstd", compressionargs={"level": 9})
+                geo_transfert(src_img, src_weights_mask_f)
+                geo_transfert(src_img, src_weights_mask_int)
 
         if KEEP_MASK_BIN:
             tiff.imwrite(src_preds_mask, pred_mask.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+            geo_transfert(src_img, src_preds_mask, True)
         if KEEP_MASK_IMG:
             tiff.imwrite(src_preds_img, preds_img.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
+            geo_transfert(src_img, src_preds_img, True)
 
+        # creation of final probas
         if KEEP_PROBAS:
-            #   _creation of final probas
-            # final_probas = np.zeros((W,H), dtype=np.float32)
-
-            # for proba in probas:
-            #     rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
-            #     final_probas += rescaled_proba
-
-            # final_probas /= len(probas)
-
             proba_img = (np.clip(proba_img, 0, 1) * 255).astype(np.uint8)
 
             tiff.imwrite(src_probas_mask, proba_img, compression="zstd", compressionargs={"level": 9})
+            geo_transfert(src_img, src_probas_mask, True)
 
         # === VECTORIZATION ===
         # =====================
@@ -453,35 +450,16 @@ def production(args):
             do_save_img=KEEP_CLUSTER_IMG,
             )
 
-        # georeference files
-        if KEEP_MASK_BIN:
-            geo_transfert(src_img, src_preds_mask, True)
-        if KEEP_MASK_IMG:
-            geo_transfert(src_img, src_preds_img, True)
-        if KEEP_PROBAS:
-            geo_transfert(src_img, src_probas_mask, True)
-        if KEEP_CLUSTER_BIN:
-            geo_transfert(src_img, src_clusters_mask, True)
+        geo_transfert(src_img, src_clusters_mask, True)
+
         if KEEP_CLUSTER_IMG:
             geo_transfert(src_img, src_clusters_img, True)
-        
-        # if KEEP_INTERMED_FILES:
-        #     tile_name = os.path.splitext(os.path.basename(src_img))[0]
-        #     for src_inter in [os.path.join(dest_inter_dir, x) for x in os.listdir(dest_inter_dir) if tile_name in x]:
-        #         geo_transfert(src_img, src_inter)
 
         # vectorize if any cluster found
         vectorize(src_clusters_mask, dest_vectors_dir)
 
         if not KEEP_CLUSTER_BIN:
             os.remove(src_clusters_mask)
-        # if not KEEP_MASK_BIN:
-        #     os.remove(src_pred_mask)
-        # if not KEEP_PROBAS:
-        #     os.remove(src_proba_mask)
-
-    # if not KEEP_INTERMED_FILES:
-    #     shutil.rmtree(dest_inter_dir)
 
     # Show duration of process
     delta_time_loop = time() - start_time

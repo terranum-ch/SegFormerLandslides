@@ -1,6 +1,8 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import sys
+import numpy as np
+import pandas as pd
 import gc
 import json
 import argparse
@@ -13,18 +15,21 @@ from transformers import (
     SegformerConfig,
 )
 import albumentations as A
-import numpy as np
 
-import pandas as pd
+import rasterio
+import shutil
+import tifffile as tiff
+from PIL import Image
+from tqdm import tqdm
 from time import time
 from datetime import datetime
 from omegaconf import OmegaConf
 
 # from utils.dataset import SegmentationDataset
-from utils.dataset_fusion import SegmentationDataset, SegFusionDataset, DatasetProxy
-from utils.trainer import TrainValMetricsTrainer, collate_with_filename, MultiScaleFusionModel
+from utils.dataset_fusion import SegmentationDataset#, SegFusionDataset, DatasetProxy
+from utils.trainer import TrainValMetricsTrainer, MultiScaleFusionModel, collate_with_filename, logits_to_preds
 from utils.metrics import compute_metrics
-from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback, TrainMetricsCallback
+from utils.callbacks import MetricsCallback, SavesCurrentStateCallback
 from utils.visualization import show_iou_per_class, show_loss_pa, show_mean_iou_dice, show_confusion_matrix
 
 import logging
@@ -137,6 +142,7 @@ def training(args):
     else:
         raise AttributeError('"is_trained" NOT CORRECT in training.yaml')
 
+    
     # Defining a transform for data augmentation
     list_transforms = [A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5), A.RandomRotate90(p=0.5)]
     if args.train.do_da_scaling:
@@ -144,22 +150,22 @@ def training(args):
     train_transform = A.Compose(list_transforms)
 
     if DATASET_MODE == 'auto':
-        full_dataset_train = DatasetProxy(
-            mode=IS_TRAINED,
+        full_dataset_train = SegmentationDataset(
+            # mode=IS_TRAINED,
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             processor=processor,
             transform=None,
-            scales=SCALES,
+            # scales=SCALES,
         )
 
-        full_dataset_val = DatasetProxy(
-            mode=IS_TRAINED,
+        full_dataset_val = SegmentationDataset(
+            # mode=IS_TRAINED,
             image_dir=os.path.join(DATASET_DIR, "images"),
             mask_dir=os.path.join(DATASET_DIR, "masks"),
             processor=processor,
             transform=None,
-            scales=SCALES,
+            # scales=SCALES,
         )
 
         split_idx = int(len(full_dataset_train) * (1 - VAL_SPLIT))
@@ -173,21 +179,21 @@ def training(args):
         train_subset = Subset(full_dataset_train, train_indices.indices)
         val_subset   = Subset(full_dataset_val, val_indices.indices)
     elif DATASET_MODE == 'split':
-        train_subset = DatasetProxy(
-            mode=IS_TRAINED,
+        train_subset = SegmentationDataset(
+            # mode=IS_TRAINED,
             image_dir=os.path.join(TRAINING_SET_DIR, "images"),
             mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            scales=SCALES,
+            # scales=SCALES,
         )
-        val_subset = DatasetProxy(
-            mode=IS_TRAINED,
+        val_subset = SegmentationDataset(
+            # mode=IS_TRAINED,
             image_dir=os.path.join(VALIDATION_SET_DIR, "images"),
             mask_dir=os.path.join(VALIDATION_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            scales=SCALES,
+            # scales=SCALES,
         )
     else:
         raise AttributeError('"dataset_mode" NOT CORRECT in dataset.yaml')
@@ -246,11 +252,8 @@ def training(args):
         compute_metrics=compute_metrics,
     )
 
-    # trainer.add_callback(TrainMetricsCallback(trainer=trainer, compute_metrics_fn=compute_metrics))
     trainer.add_callback(MetricsCallback(trainer=trainer, cf_dir=CONFMAT_DIR))
     trainer.add_callback(SavesCurrentStateCallback(trainer=trainer, last_checkpoint_dir=LAST_CHECKPOINT_DIR))
-    if DO_SAVE_BEST_PREDS:
-        trainer.add_callback(SaveBestPredictionsCallback(trainer=trainer, save_dir=BESTPREDS_DIR, dataset_dir=DATASET_DIR))
 
     # Train
     trainer.train(resume_from_checkpoint=EXISTING_DIR_TO_RESUME_FROM)
@@ -282,20 +285,73 @@ def training(args):
     with open(os.path.join(RESULTS_DIR, 'best_results.json'), 'w') as f:
         json.dump(dict_best_results, f, indent=2)
 
+    # Save best preds
     if DO_SAVE_BEST_PREDS:
-        # Save best confidence matrix
-        src_best_cm = os.path.join(CONFMAT_DIR, 'values', f"confusion_matrix_ep_{int(dict_best_results['epoch']-1)}.csv")
-        if os.path.exists(src_best_cm):
-            conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
-            sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
-            sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
-            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
-            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
-            show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
+        print("Computing best preds..")
+        
+        os.makedirs(BESTPREDS_DIR, exist_ok=True)
+        src_best_preds_img = os.path.join(BESTPREDS_DIR, "preds")
+        src_best_preds_bin = os.path.join(BESTPREDS_DIR, "bin")
+        src_best_preds_labels = os.path.join(BESTPREDS_DIR, "labels")
+        src_best_preds_originals = os.path.join(BESTPREDS_DIR, "images")
+        os.makedirs(src_best_preds_img, exist_ok=True)
+        os.makedirs(src_best_preds_bin, exist_ok=True)
+        os.makedirs(src_best_preds_labels, exist_ok=True)
+        os.makedirs(src_best_preds_originals, exist_ok=True)
+        list_val_sample_names = [val_subset.dataset.images[x] for x in val_subset.indices]
+
+        ckpt_path = os.path.join(RESULTS_DIR, f'checkpoint-{best_step}')
+        # best_model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
+        # model = load_model(IS_TRAINED, ckpt_path, SCALES)
+        if IS_TRAINED == 'segmenter':
+            model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
         else:
-            print("CONFMAT NOT CREATED FOR BEST EPOCH")
-            print("following does not exist:")
-            print(src_best_cm)
+            model  = MultiScaleFusionModel.from_pretrained(
+                segformer_model_name_or_path=get_best_checkpoint(PRETRAIN_DIR),
+                scales=SCALES,
+                fusion_checkpoint=ckpt_path,
+                num_labels=2,
+                device=DEVICE,
+                )
+        DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model.to(DEVICE)
+        model.eval()
+        
+        for _, tile_name in tqdm(enumerate(list_val_sample_names), total=len(list_val_sample_names)):
+            src_img = os.path.join(DATASET_DIR, 'images', tile_name)
+            src_labels = os.path.join(DATASET_DIR, 'labels', tile_name)
+
+            image = torch.tensor(rasterio.open(src_img).read()[:3,...]).to(DEVICE)
+            image = image / 255.0
+            mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(3,1,1)
+            std  = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(3,1,1)
+            image = (image - mean) / std
+
+            image = torch.permute(image[torch.newaxis, ...], (0, 1, 2, 3)) if IS_TRAINED=="segmenter" else torch.permute(image[torch.newaxis, ...], (0, 2, 3, 1))
+            output = model(image)
+            preds = logits_to_preds(logits=output.logits, do_upscale=IS_TRAINED=='segmenter').squeeze(0)
+            preds_rgb = np.zeros((preds.shape[0], preds.shape[1], 3), dtype=np.uint8)
+            preds_rgb[preds != 0] = 255
+
+            # saving images
+            Image.fromarray(preds_rgb).save(os.path.join(src_best_preds_img, tile_name))
+            tiff.imwrite(os.path.join(src_best_preds_bin, tile_name), preds, compression="zstd", compressionargs={"level": 9})
+            shutil.copyfile(src_img, os.path.join(src_best_preds_originals, tile_name))
+            shutil.copyfile(src_labels, os.path.join(src_best_preds_labels, tile_name))
+
+    # Save best confidence matrix
+    src_best_cm = os.path.join(CONFMAT_DIR, 'values', f"confusion_matrix_ep_{int(dict_best_results['epoch']-1)}.csv")
+    if os.path.exists(src_best_cm):
+        conf_mat = pd.read_csv(src_best_cm, sep=';', index_col=0).values
+        sum_for_recall = np.sum(conf_mat, axis=1).reshape(-1, 1)
+        sum_for_precision = np.sum(conf_mat, axis=0).reshape(1, -1)
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix.png'), conf_mat, ['Background', 'Landslide'])
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_recall.png'), conf_mat / sum_for_recall, ['Background', 'Landslide'], "Confusion Matrix - Producer accuracy")
+        show_confusion_matrix(os.path.join(IMG_DIR, 'confusion_matrix_precision.png'), conf_mat / sum_for_precision, ['Background', 'Landslide'], "Confusion Matrix - User accuracy")
+    else:
+        print("CONFMAT NOT CREATED FOR BEST EPOCH")
+        print("following does not exist:")
+        print(src_best_cm)
 
     # Show duration of process
     delta_time_loop = time() - time_start

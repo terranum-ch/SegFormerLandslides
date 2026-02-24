@@ -191,6 +191,7 @@ def predict(image, model_dir, img_path=None, tile_size=512, stride=256, th=0.5, 
 def predict_batch_array_fusion(
     model,
     batch,
+    do_keep_weights=True,
     device="cuda",
 ):
     """
@@ -221,9 +222,9 @@ def predict_batch_array_fusion(
     with torch.no_grad():
         # input = {'multspec_img': batch, 'return_weights': True}
         # logits, weights = model(**input)  # (B,C,h,w)
-        logits, weights = model(
+        output = model(
             pixel_values=batch,
-            return_weights=True,
+            return_weights=do_keep_weights,
             )
 
         # logits = F.interpolate(
@@ -233,7 +234,7 @@ def predict_batch_array_fusion(
         #     align_corners=False
         # )
 
-    return logits, weights  # keep on GPU
+    return output  # keep on GPU
 
 
 def predict_batch_array(
@@ -285,6 +286,7 @@ def predict_with_batch_fusion(
         tile_size=2048, 
         stride=1024, 
         th=0.5, 
+        do_keep_weights=True,
         do_show=True, 
         do_save=True, 
         do_save_mask_as_img=True
@@ -295,19 +297,11 @@ def predict_with_batch_fusion(
     img_arr = np.array(image)[..., :3]
 
     img_padded, _, _ = mirror_pad_image_fusion(img_arr, tile_size, stride)
-                
-    # Image.fromarray(img_padded, mode='RGB').save(
-    #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image.tif')
-    # )
-    # quit()
 
     H_original, W_original  = img_arr.shape[:2]
     H, W = img_padded.shape[:2]
-    
+    overlap = tile_size - stride
     # prepare arrays
-    # prob_acc = torch.zeros((H,W), device=model.device)
-    weight_acc = torch.zeros((H,W))
-    weights_fusion_acc = torch.zeros((4,H,W))
     prob_acc = torch.zeros((H,W))
     weight_acc = torch.zeros((H,W))
     weights_fusion_acc = torch.zeros((4,H,W))
@@ -320,57 +314,61 @@ def predict_with_batch_fusion(
     batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device) # B x K x W x H x 3
     initial_poses = []
 
-    for id_sample, (x,y) in tqdm(enumerate(list_positions), total=len(list_positions)):
+    for id_sample, (x,y) in tqdm(enumerate(list_positions), total=len(list_positions), disable=True):
         x0 = min(x, W - tile_size)
         y0 = min(y, H - tile_size)
         tile = img_padded[y0:y0 + tile_size, x0:x0 + tile_size, :]
-                
-        # # extract different scales:
-        # imgs = []
-        # for s in scales:
-        #     img_s, _ = get_multiscale_patch(
-        #         img_2048=np.moveaxis(tile, 2, 0), 
-        #         scale=s,
-        #         )
-        #     imgs.append(np.moveaxis(img_s, 0, 2))
-
-        # stack for model
-        # imgs = np.stack(imgs)      # (K, C, 512, 512)
 
         batch[id_sample % batch_size, ...] = torch.tensor(tile)
         initial_poses.append((x0, y0))
 
         # Crop region (handles border tiles automatically)
         if (id_sample > 0 and (id_sample + 1) % batch_size == 0) or id_sample == len(list_positions) - 1:
-            
-            # Image.fromarray(batch[0,...].cpu().numpy().astype(np.uint8), mode='RGB').save(
-            #     os.path.join(r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\data\test\subimages", f'image.tif')
-            # )
-            # quit()
 
-            logits, weights_fusion = predict_batch_array_fusion(
+            output, weights = predict_batch_array_fusion(
                 model, 
                 batch, 
+                do_keep_weights,
                 model.device
                 )
-            probs = torch.softmax(logits.logits, dim=1)[:, ].detach().cpu()
+            probs = torch.softmax(output.logits, dim=1)[:, ].detach().cpu()
 
             for i in range(len(initial_poses)):
                 xi, yi = initial_poses[i]
-                prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))
-                weight_acc[yi:yi+tile_size, xi:xi+tile_size] += 1
-                weights_fusion_acc[:, yi:yi+tile_size, xi:xi+tile_size] += weights_fusion[i, :].reshape((4, tile_size, tile_size)).cpu()
+                
 
-            # batch = torch.zeros((batch_size, len(scales), tile_size, tile_size, 3), device=model.device)
-            batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
+                y2 = yi + int(overlap/2) if yi != 0 else 0
+                x2 = xi + int(overlap/2) if xi != 0 else 0
+                y3 = yi + tile_size - int(overlap/2) if yi + tile_size < H else yi + tile_size
+                x3 = xi + tile_size - int(overlap/2) if xi + tile_size < W else xi + tile_size
+                print(y2, y3, x2, x3)
+                x0_log = int(overlap/2) if x2 != 0 else 0
+                y0_log = int(overlap/2) if y2 != 0 else 0
+                y1_log = tile_size - int(overlap/2) if yi + tile_size < H else tile_size
+                x1_log = tile_size - int(overlap/2) if xi + tile_size < W else tile_size
+                print(y0_log, y1_log, x0_log, x1_log)
+                print('---')
+                # y1_log
+
+                # prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))
+                prob_acc[y2:y3, x2:x3] += probs[i, 1, ...].reshape((tile_size, tile_size))[y0_log:y1_log, x0_log:x1_log]
+                if do_keep_weights:
+                    # weight_acc[yi:yi+tile_size, xi:xi+tile_size] += 1
+                    # weights_fusion_acc[:, yi:yi+tile_size, xi:xi+tile_size] += output.weights[i, :].reshape((4, tile_size, tile_size)).cpu()
+                    weight_acc[y2:y3, x2:x3] += 1
+                    weights_fusion_acc[:, y2:y3, x2:x3] += weights[i, :].reshape((4, tile_size, tile_size)).cpu()[:, y0_log:y1_log, x0_log:x1_log]
+
+            # batch = torch.zeros((batch_size, tile_size, tile_size, 3), device=model.device)
             initial_poses = []
 
-    final_prob = torch.divide(prob_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
-    
+    # final_prob = torch.divide(prob_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
+    final_prob = prob_acc[0:H_original, 0:W_original].cpu().numpy()
+    # weights_fusion_acc = torch.divide(weights_fusion_acc, weight_acc)[0:H_original, 0:W_original].cpu().numpy()
+    weights_fusion_acc = weights_fusion_acc.cpu().numpy()
     final_labels = np.zeros(final_prob.shape, dtype=np.uint8)
     final_labels[final_prob >= th] = 1
 
-    final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original].cpu().numpy()
+    final_weights_fusion_acc = weights_fusion_acc[:, 0:H_original, 0:W_original] if do_keep_weights else None
 
     src_dest_preds_mask = os.path.splitext(img_path)[0] + f'_preds_mask.tif'
     src_dest_preds_img = os.path.splitext(img_path)[0] + f'_preds_img.tif'

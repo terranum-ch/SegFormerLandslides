@@ -322,7 +322,8 @@ def production(args):
     THRESHOLD_PREDS = args.predictions.threshold_preds
     THRESHOLD_GROUPING = args.predictions.threshold_grouping
     TILE_SIZE = args.predictions.tile_size
-    STRIDE = args.predictions.stride
+    OVERLAP = args.predictions.overlap
+    STRIDE = TILE_SIZE - OVERLAP
     RESOLUTIONS = args.predictions.scales
     KEEP_INTERMED_FILES = args.to_keep.intermed
     KEEP_MASK_BIN = args.to_keep.mask_bin
