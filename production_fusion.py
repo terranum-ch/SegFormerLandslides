@@ -313,8 +313,6 @@ def vectorize(src_target, src_dest):
 
 
 def production(args):
-    # return
-    # raise ValueError("Test")
     start_time = time()
 
     # Load parameters

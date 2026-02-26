@@ -1,10 +1,10 @@
 output_dir: "results/training"
 # output_suffixe: fusion_modulus_dice_focal_loss
 # output_suffixe: fusion_modulus
-output_suffixe: test
+output_suffixe: test_label_smoothing_0.1
 # output_suffixe: Bern_v2_focal_dice_losses
 val_split: 0.1
-num_epochs: 1
+num_epochs: 2
 batch_size: 2
 num_workers: 2
 learning_rate: 5e-5

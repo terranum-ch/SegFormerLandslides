@@ -195,14 +195,21 @@ class SegFusionDataset(Dataset):
 
 
 class SegmentationDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, processor, transform=None):
-        self.image_dir = image_dir
-        self.mask_dir = mask_dir
+    def __init__(self, data_dir, processor, transform=None):
+        self.data_dir = data_dir
         self.processor = processor
         self.transform = transform
 
-        self.images = sorted(os.listdir(image_dir))
-        self.masks  = sorted(os.listdir(mask_dir))
+        self.images = []
+        self.masks = []
+        for dataset in [r for r,_,_ in os.walk(data_dir) if os.path.basename(r) in ["images", "masks"]]:
+            if os.path.basename(dataset) == 'images':
+                self.images.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+            else:
+                self.masks.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+
+        self.images = [x for row in self.images for x in row]
+        self.masks = [x for row in self.masks for x in row]
 
         assert len(self.images) == len(self.masks), "Image/mask count mismatch"
 
@@ -210,13 +217,13 @@ class SegmentationDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.image_dir, self.images[idx])
-        mask_path = os.path.join(self.mask_dir, self.masks[idx])
+        # img_path = os.path.join(self.image_dir, self.images[idx])
+        # mask_path = os.path.join(self.mask_dir, self.masks[idx])
 
         # image = np.array(Image.open(img_path).convert("RGB"))
         # mask = np.array(Image.open(mask_path)).astype("int64")
-        image = np.moveaxis(rasterio.open(img_path).read(), 0, 2)[..., :3]
-        mask = np.moveaxis(rasterio.open(mask_path).read(), 0, 2)
+        image = np.moveaxis(rasterio.open(self.images[idx]).read(), 0, 2)[..., :3]
+        mask = np.moveaxis(rasterio.open(self.masks[idx]).read(), 0, 2)
 
         # Apply augmentation
         if self.transform is not None:
@@ -285,13 +292,28 @@ class DatasetProxy:
     
 
 if __name__ == "__main__":
-    std  = np.array([0.229, 0.224, 0.225])[None, None, None, :]
-    test = np.zeros((4,512,512,3))
-    print(std.shape)
-    # std = std[np.newaxis, ...]
-    # print(std.shape)
-    # print(np.vstack([std]*4).shape)
-    test = test / std
+    src_data = 'data/dataset_segmentation_playground'
+    # for r,d,f in os.walk(src_data):
+    #     print(r, d, f)
+    images = []
+    masks = []
+    for dataset in [r for r,_,_ in os.walk(src_data) if os.path.basename(r) in ["images", "masks"]]:
+        if os.path.basename(dataset) == 'images':
+            images.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+        else:
+            masks.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+
+    images = [x for row in images for x in row]
+    masks = [x for row in masks for x in row]
+    print(len(images))
+    print(len(masks))
+    # for dataset in [r for r,d,f in os.walk(src_data) if os.path.basename(r) == "images"]:
+    #     images.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+    # images = [x for row in images for x in row]
+    # print(len(images))
+    # print(images)
+
+
     quit()
 
 

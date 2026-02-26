@@ -120,7 +120,22 @@ class TrainValMetricsTrainer(Trainer):
         os.makedirs(confmat_dir, exist_ok=True)
         os.makedirs(self.cf_dir_img, exist_ok=True)
         os.makedirs(self.cf_dir_val, exist_ok=True)
-    
+
+        # compute weights for loss
+        dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
+        count_ls = 0
+        count_bck = 0
+        print("Computing weights...")
+        for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
+            inputs = dataset[samp_id]
+            labels = inputs['labels']
+            count_ls += torch.sum(labels == 1)
+            count_bck += torch.sum(labels == 0)
+        
+        tot = count_ls + count_bck
+        self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
+        print(f"Weights:\n\tBackground: {self.class_weights[0]}\n\tLandslide: {self.class_weights[1]}")
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
 
@@ -168,9 +183,6 @@ class TrainValMetricsTrainer(Trainer):
         ignore_keys=None,
         metric_key_prefix="eval",
     ):
-        import torch
-        from torch.nn import functional as F
-
         model = self._wrap_model(self.model, training=False)
         model.eval()
 
@@ -236,17 +248,68 @@ class TrainValMetricsTrainer(Trainer):
         )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        # if hasattr(inputs, 'labels'):
+        # # if hasattr(inputs, 'labels'):
+        # labels = inputs.pop("labels")
+        # try:
+        #     filenames = inputs.pop("filename")
+        # except:
+        #     pass
+
+        # outputs = model(**inputs)
+        # logits = outputs.logits if hasattr(outputs, 'logits') else outputs # (B, C, H, W)
+        
+        # # Resize logits to match labels
+        # logits = torch.nn.functional.interpolate(
+        #     logits,
+        #     size=labels.shape[-2:],
+        #     mode="bilinear",
+        #     align_corners=False
+        # )
+
+        # # ce_loss = F.cross_entropy(
+        # #     logits,
+        # #     labels,
+        # #     weight=self.class_weights,
+        # #     ignore_index=255  # very important for segmentation
+        # # )
+
+        # B, C, H, W = logits.shape
+
+        # # --------------------------
+        # # Label smoothing
+        # # --------------------------
+        # epsilon = 0.05  # smoothing factor
+
+        # # Convert labels to one-hot
+        # labels_one_hot = torch.nn.functional.one_hot(
+        #     labels.long(),
+        #     num_classes=C
+        # )  # (B, H, W, C)
+
+        # labels_one_hot = labels_one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+
+        # # Apply smoothing
+        # labels_smooth = labels_one_hot * (1 - epsilon) + epsilon / C
+
+        # # --------------------------
+        # # Loss computation
+        # # ---
+        # f_loss = focal_loss(logits, labels_smooth)
+        # d_loss = dice_loss(logits, labels_smooth)
+        # loss = f_loss + 0.5 * d_loss
+
+        # return (loss, outputs) if return_outputs else loss
+
         labels = inputs.pop("labels")
+
         try:
             filenames = inputs.pop("filename")
         except:
             pass
 
         outputs = model(**inputs)
-        logits = outputs.logits if hasattr(outputs, 'logits') else outputs # (B, C, H, W)
-        
-        # Resize logits to match labels
+        logits = outputs.logits if hasattr(outputs, 'logits') else outputs
+
         logits = torch.nn.functional.interpolate(
             logits,
             size=labels.shape[-2:],
@@ -254,30 +317,18 @@ class TrainValMetricsTrainer(Trainer):
             align_corners=False
         )
 
-        B, C, H, W = logits.shape
+        epsilon = 0.1
 
-        # --------------------------
-        # Label smoothing
-        # --------------------------
-        epsilon = 0.05  # smoothing factor
-
-        # Convert labels to one-hot
-        labels_one_hot = torch.nn.functional.one_hot(
+        ce_loss = torch.nn.functional.cross_entropy(
+            logits,
             labels.long(),
-            num_classes=C
-        )  # (B, H, W, C)
+            weight=self.class_weights,
+            label_smoothing=epsilon
+        )
 
-        labels_one_hot = labels_one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+        d_loss = dice_loss(logits, labels)
 
-        # Apply smoothing
-        labels_smooth = labels_one_hot * (1 - epsilon) + epsilon / C
-
-        # --------------------------
-        # Loss computation
-        # ---
-        f_loss = focal_loss(logits, labels_smooth)
-        d_loss = dice_loss(logits, labels_smooth)
-        loss = f_loss + 0.5 * d_loss
+        loss = ce_loss + 0.5 * d_loss
 
         return (loss, outputs) if return_outputs else loss
 

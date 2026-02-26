@@ -152,8 +152,9 @@ def training(args):
     if DATASET_MODE == 'auto':
         full_dataset_train = SegmentationDataset(
             # mode=IS_TRAINED,
-            image_dir=os.path.join(DATASET_DIR, "images"),
-            mask_dir=os.path.join(DATASET_DIR, "masks"),
+            data_dir= DATASET_DIR,
+            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
+            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
             # scales=SCALES,
@@ -161,8 +162,9 @@ def training(args):
 
         full_dataset_val = SegmentationDataset(
             # mode=IS_TRAINED,
-            image_dir=os.path.join(DATASET_DIR, "images"),
-            mask_dir=os.path.join(DATASET_DIR, "masks"),
+            data_dir= DATASET_DIR,
+            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
+            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
             # scales=SCALES,
@@ -181,16 +183,18 @@ def training(args):
     elif DATASET_MODE == 'split':
         train_subset = SegmentationDataset(
             # mode=IS_TRAINED,
-            image_dir=os.path.join(TRAINING_SET_DIR, "images"),
-            mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
+            data_dir= TRAINING_SET_DIR,
+            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
+            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
             # scales=SCALES,
         )
         val_subset = SegmentationDataset(
             # mode=IS_TRAINED,
-            image_dir=os.path.join(VALIDATION_SET_DIR, "images"),
-            mask_dir=os.path.join(VALIDATION_SET_DIR, "masks"),
+            data_dir= VALIDATION_SET_DIR,
+            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
+            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
             # scales=SCALES,
@@ -294,10 +298,12 @@ def training(args):
         src_best_preds_bin = os.path.join(BESTPREDS_DIR, "bin")
         src_best_preds_labels = os.path.join(BESTPREDS_DIR, "labels")
         src_best_preds_originals = os.path.join(BESTPREDS_DIR, "images")
+        src_best_preds_probas = os.path.join(BESTPREDS_DIR, "probas")
         os.makedirs(src_best_preds_img, exist_ok=True)
         os.makedirs(src_best_preds_bin, exist_ok=True)
         os.makedirs(src_best_preds_labels, exist_ok=True)
         os.makedirs(src_best_preds_originals, exist_ok=True)
+        os.makedirs(src_best_preds_probas, exist_ok=True)
         list_val_sample_names = [val_subset.dataset.images[x] for x in val_subset.indices]
 
         ckpt_path = os.path.join(RESULTS_DIR, f'checkpoint-{best_step}')
@@ -333,7 +339,19 @@ def training(args):
             preds_rgb = np.zeros((preds.shape[0], preds.shape[1], 3), dtype=np.uint8)
             preds_rgb[preds != 0] = 255
 
+            # proba = torch.softmax(output.logits, dim=1)[0,1,...].detach().cpu().numpy()
+            proba = torch.nn.functional.interpolate(
+                torch.softmax(output.logits, dim=1),
+                size=(preds.shape[0], preds.shape[1]),   # (H_lbl, W_lbl)
+                mode="bilinear",
+                align_corners=False
+            )[0,1,...].detach().cpu().numpy()
+            # proba_rgb = np.zeros((proba.shape[0], proba.shape[1], 3), dtype=np.uint8)
+            # proba_rgb[proba != 0] = 255
+
+            # tiff.imwrite(src_probas_mask, proba_img, compression="zstd", compressionargs={"level": 9})
             # saving images
+            Image.fromarray(proba).save(os.path.join(src_best_preds_probas, tile_name))
             Image.fromarray(preds_rgb).save(os.path.join(src_best_preds_img, tile_name))
             tiff.imwrite(os.path.join(src_best_preds_bin, tile_name), preds, compression="zstd", compressionargs={"level": 9})
             shutil.copyfile(src_img, os.path.join(src_best_preds_originals, tile_name))

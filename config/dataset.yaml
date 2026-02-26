@@ -1,7 +1,8 @@
 segmenter:
   # dataset_dir: 'data/dataset_Bern_v2'
   # dataset_dir: 'data/dataset_Longxi_small'
-  dataset_dir: 'data/dataset_Longxi_tiny'
+  # dataset_dir: 'data/dataset_Longxi_tiny'
+  dataset_dir: 'data/dataset_segmentation_playground'
   # dataset_dir: 'data/dataset_Longxi'
   # dataset_dir: 'data/dataset_Longxi_Bern_v2'
   # dataset_dir: 'data/test_dem/dataset_with_dem'
