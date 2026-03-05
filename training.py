@@ -65,11 +65,14 @@ def training(args):
     OUTPUT_DIR = rf"{args.train.output_dir}"
     OUTPUT_SUFFIXE = args.train.output_suffixe
     VAL_SPLIT = args.train.val_split
+    FRAC_DATA = args.train.frac_data
     NUM_EPOCHS = args.train.num_epochs
     NUM_WORKERS = args.train.num_workers
     BATCH_SIZE = args.train.batch_size
     LEARNING_RATE = args.train.learning_rate
     WEIGHT_DECAY = args.train.weight_decay
+    LABEL_SMOOTHING = args.train.label_smoothing
+    LOSS_WEIGHTS = args.train.loss_weights
     PRETRAINED_MODEL = args.train.pretrained_model
     IS_TRAINED = args.train.is_trained
     
@@ -151,30 +154,23 @@ def training(args):
 
     if DATASET_MODE == 'auto':
         full_dataset_train = SegmentationDataset(
-            # mode=IS_TRAINED,
             data_dir= DATASET_DIR,
-            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
-            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            # scales=SCALES,
         )
 
         full_dataset_val = SegmentationDataset(
-            # mode=IS_TRAINED,
             data_dir= DATASET_DIR,
-            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
-            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            # scales=SCALES,
         )
 
-        split_idx = int(len(full_dataset_train) * (1 - VAL_SPLIT))
+        effective_data_lenght = int(len(full_dataset_train) * FRAC_DATA)
+        split_idx = int(effective_data_lenght * (1 - VAL_SPLIT))
 
         train_indices, val_indices = random_split(
-            range(len(full_dataset_train)),
-            [split_idx, len(full_dataset_train) - split_idx],
+            range(effective_data_lenght),
+            [split_idx, effective_data_lenght - split_idx],
             generator=torch.Generator().manual_seed(42)
         )
 
@@ -182,22 +178,14 @@ def training(args):
         val_subset   = Subset(full_dataset_val, val_indices.indices)
     elif DATASET_MODE == 'split':
         train_subset = SegmentationDataset(
-            # mode=IS_TRAINED,
             data_dir= TRAINING_SET_DIR,
-            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
-            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            # scales=SCALES,
         )
         val_subset = SegmentationDataset(
-            # mode=IS_TRAINED,
             data_dir= VALIDATION_SET_DIR,
-            # image_dir=os.path.join(TRAINING_SET_DIR, "images"),
-            # mask_dir=os.path.join(TRAINING_SET_DIR, "masks"),
             processor=processor,
             transform=None,
-            # scales=SCALES,
         )
     else:
         raise AttributeError('"dataset_mode" NOT CORRECT in dataset.yaml')
@@ -237,7 +225,7 @@ def training(args):
 
         # Others
         fp16=True,                          # Mixed precision (if GPU supports)
-        # prediction_loss_only=True,
+        prediction_loss_only=False,
         gradient_accumulation_steps=1,      # Increase effective batch size if needed
         dataloader_num_workers=NUM_WORKERS,           # Adjust according to CPU cores
         disable_tqdm=False,
@@ -248,6 +236,8 @@ def training(args):
     trainer = TrainValMetricsTrainer(
         confmat_dir=CONFMAT_DIR,
         model=model,
+        label_smoothing=LABEL_SMOOTHING,
+        loss_weights=LOSS_WEIGHTS,
         args=training_args,
         data_collator=collate_with_filename,
         train_dataset=train_subset,
@@ -304,13 +294,15 @@ def training(args):
         os.makedirs(src_best_preds_labels, exist_ok=True)
         os.makedirs(src_best_preds_originals, exist_ok=True)
         os.makedirs(src_best_preds_probas, exist_ok=True)
-        list_val_sample_names = [val_subset.dataset.images[x] for x in val_subset.indices]
+        list_val_sample_names = [(val_subset.dataset.images[x], val_subset.dataset.masks[x]) for x in val_subset.indices]
 
         ckpt_path = os.path.join(RESULTS_DIR, f'checkpoint-{best_step}')
-        # best_model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
-        # model = load_model(IS_TRAINED, ckpt_path, SCALES)
         if IS_TRAINED == 'segmenter':
-            model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
+            model = SegformerForSemanticSegmentation.from_pretrained(
+                ckpt_path, 
+                num_labels=2,
+                ignore_mismatched_sizes=True  # <- Important for custom classes
+                )
         else:
             model  = MultiScaleFusionModel.from_pretrained(
                 segformer_model_name_or_path=get_best_checkpoint(PRETRAIN_DIR),
@@ -323,10 +315,8 @@ def training(args):
         model.to(DEVICE)
         model.eval()
         
-        for _, tile_name in tqdm(enumerate(list_val_sample_names), total=len(list_val_sample_names)):
-            src_img = os.path.join(DATASET_DIR, 'images', tile_name)
-            src_labels = os.path.join(DATASET_DIR, 'labels', tile_name)
-
+        for _, (src_img, src_labels) in tqdm(enumerate(list_val_sample_names), total=len(list_val_sample_names)):
+            tile_name = os.path.basename(src_img)
             image = torch.tensor(rasterio.open(src_img).read()[:3,...]).to(DEVICE)
             image = image / 255.0
             mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(3,1,1)
@@ -334,22 +324,21 @@ def training(args):
             image = (image - mean) / std
 
             image = torch.permute(image[torch.newaxis, ...], (0, 1, 2, 3)) if IS_TRAINED=="segmenter" else torch.permute(image[torch.newaxis, ...], (0, 2, 3, 1))
-            output = model(image)
-            preds = logits_to_preds(logits=output.logits, do_upscale=IS_TRAINED=='segmenter').squeeze(0)
+            outputs = model(image)
+            if not isinstance(model, SegformerForSemanticSegmentation):
+                outputs = outputs[0]
+            preds = logits_to_preds(logits=outputs.logits, do_upscale=IS_TRAINED=='segmenter').squeeze(0)
             preds_rgb = np.zeros((preds.shape[0], preds.shape[1], 3), dtype=np.uint8)
             preds_rgb[preds != 0] = 255
 
-            # proba = torch.softmax(output.logits, dim=1)[0,1,...].detach().cpu().numpy()
+            # proba = torch.softmax(outputs.logits, dim=1)[0,1,...].detach().cpu().numpy()
             proba = torch.nn.functional.interpolate(
-                torch.softmax(output.logits, dim=1),
+                torch.softmax(outputs.logits, dim=1),
                 size=(preds.shape[0], preds.shape[1]),   # (H_lbl, W_lbl)
                 mode="bilinear",
                 align_corners=False
             )[0,1,...].detach().cpu().numpy()
-            # proba_rgb = np.zeros((proba.shape[0], proba.shape[1], 3), dtype=np.uint8)
-            # proba_rgb[proba != 0] = 255
 
-            # tiff.imwrite(src_probas_mask, proba_img, compression="zstd", compressionargs={"level": 9})
             # saving images
             Image.fromarray(proba).save(os.path.join(src_best_preds_probas, tile_name))
             Image.fromarray(preds_rgb).save(os.path.join(src_best_preds_img, tile_name))
@@ -387,6 +376,22 @@ def training(args):
 
 
 if __name__ == "__main__":
+    # ckpt_path = r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\results\training\20260305_090808_segmenter_3_epochs_test\last_checkpoint"
+    
+    # # model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
+    # model = SegformerForSemanticSegmentation.from_pretrained(
+    #         ckpt_path,
+    #         num_labels=2,
+    #         ignore_mismatched_sizes=True  # <- Important for custom classes
+    #     )
+    # DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # model.to(DEVICE)
+    # model.eval()
+    # quit()
+
+
+
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="")
     args = parser.parse_args()

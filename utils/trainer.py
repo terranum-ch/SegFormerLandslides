@@ -107,12 +107,13 @@ def focal_loss(
 
 
 class TrainValMetricsTrainer(Trainer):
-    def __init__(self, confmat_dir, confmat_buffer_size=1000, *args, **kwargs):
+    def __init__(self, confmat_dir, label_smoothing=0.1, loss_weights='auto', *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.training_metrics = []
         self.training_losses = []
         self.confmat_dir = confmat_dir
+        self.label_smoothing = label_smoothing
 
         self.cf_dir_img = os.path.join(confmat_dir, "images")
         self.cf_dir_val = os.path.join(confmat_dir, "values")
@@ -122,18 +123,21 @@ class TrainValMetricsTrainer(Trainer):
         os.makedirs(self.cf_dir_val, exist_ok=True)
 
         # compute weights for loss
-        dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
-        count_ls = 0
-        count_bck = 0
-        print("Computing weights...")
-        for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
-            inputs = dataset[samp_id]
-            labels = inputs['labels']
-            count_ls += torch.sum(labels == 1)
-            count_bck += torch.sum(labels == 0)
-        
-        tot = count_ls + count_bck
-        self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
+        if loss_weights == 'auto':
+            dataset = self.train_dataset.dataset if isinstance(self.train_dataset, Subset) else self.train_dataset
+            count_ls = 0
+            count_bck = 0
+            print("Computing weights...")
+            for samp_id in tqdm(range(len(dataset)), total=len(dataset)):
+                inputs = dataset[samp_id]
+                labels = inputs['labels']
+                count_ls += torch.sum(labels == 1)
+                count_bck += torch.sum(labels == 0)
+            
+            tot = count_ls + count_bck
+            self.class_weights = torch.Tensor([tot/count_bck, tot/count_ls]).to('cuda:0')
+        else:
+            self.class_weights = torch.Tensor(loss_weights).to('cuda')
         print(f"Weights:\n\tBackground: {self.class_weights[0]}\n\tLandslide: {self.class_weights[1]}")
 
     def training_step(self, model, inputs, num_items_in_batch=None):
@@ -152,13 +156,25 @@ class TrainValMetricsTrainer(Trainer):
 
         # ---- Compute training metrics safely ----
         with torch.no_grad():
-            logits = outputs.logits if hasattr(outputs, 'logits') else outputs # (B, C, H, W)
-            logits = torch.nn.functional.interpolate(
-                logits,
-                size=labels.shape[-2:],
-                mode="bilinear",
-                align_corners=False
-            )
+            logits = outputs.logits
+            if isinstance(model, SegformerForSemanticSegmentation):
+
+                logits = torch.nn.functional.interpolate(
+                    logits,
+                    size=labels.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False
+                )
+            # else:   # if model is fusion
+            #     logits = outputs[0].logits
+        
+            # logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0].logits # (B, C, H, W)
+            # logits = torch.nn.functional.interpolate(
+            #     logits,
+            #     size=labels.shape[-2:],
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
 
             preds = logits.detach().cpu().numpy()
             labs = labels.detach().cpu().numpy()
@@ -308,26 +324,28 @@ class TrainValMetricsTrainer(Trainer):
             pass
 
         outputs = model(**inputs)
-        logits = outputs.logits if hasattr(outputs, 'logits') else outputs
-
-        logits = torch.nn.functional.interpolate(
-            logits,
-            size=labels.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
-
-        epsilon = 0.1
+        if isinstance(model, SegformerForSemanticSegmentation):
+            logits = outputs.logits
+            logits = torch.nn.functional.interpolate(
+                logits,
+                size=labels.shape[-2:],
+                mode="bilinear",
+                align_corners=False
+            )
+        else:   # if model is fusion
+            outputs = outputs[0]
+            logits = outputs.logits
 
         ce_loss = torch.nn.functional.cross_entropy(
             logits,
             labels.long(),
             weight=self.class_weights,
-            label_smoothing=epsilon
+            label_smoothing=self.label_smoothing
         )
-
+        # f_loss = focal_loss(logits, labels)
         d_loss = dice_loss(logits, labels)
 
+        # loss = f_loss + 0.5 * d_loss
         loss = ce_loss + 0.5 * d_loss
 
         return (loss, outputs) if return_outputs else loss

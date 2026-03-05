@@ -53,7 +53,7 @@ def show_loss_pa(history, saving_loc, do_show=False, do_save=True):
     plt.tight_layout()
     if do_save:
         plt.savefig(saving_loc)
-        plt.savefig(saving_loc.split('.')[0] + '.eps', format='eps')
+        plt.savefig(os.path.splitext(saving_loc)[0] + '.eps', format='eps')
     
     if do_show:
         plt.show()
@@ -109,7 +109,7 @@ def show_mean_iou_dice(history, saving_loc, do_show=False, do_save=True):
 
     if do_save:
         plt.savefig(saving_loc)
-        plt.savefig(saving_loc.split('.')[0] + '.eps', format='eps')
+        plt.savefig(os.path.splitext(saving_loc)[0] + '.eps', format='eps')
     
     if do_show:
         plt.show()
@@ -160,7 +160,7 @@ def show_iou_per_class(history, saving_loc, do_show=False, do_save=True):
     
     if do_save:
         plt.savefig(saving_loc)
-        plt.savefig(saving_loc.split('.')[0] + '.eps', format='eps')
+        plt.savefig(os.path.splitext(saving_loc)[0] + '.eps', format='eps')
     
     if do_show:
         plt.show()
@@ -194,7 +194,7 @@ def show_confusion_matrix(saving_loc, conf_mat, class_labels, title="Confusion M
 
     if do_save:
         plt.savefig(saving_loc)
-        plt.savefig(saving_loc.split('.')[0] + '.eps', format='eps')
+        plt.savefig(os.path.splitext(saving_loc)[0] + '.eps', format='eps')
 
     if do_show:
         plt.show()

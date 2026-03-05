@@ -341,13 +341,13 @@ def predict_with_batch_fusion(
                 x2 = xi + int(overlap/2) if xi != 0 else 0
                 y3 = yi + tile_size - int(overlap/2) if yi + tile_size < H else yi + tile_size
                 x3 = xi + tile_size - int(overlap/2) if xi + tile_size < W else xi + tile_size
-                print(y2, y3, x2, x3)
+                # print(y2, y3, x2, x3)
                 x0_log = int(overlap/2) if x2 != 0 else 0
                 y0_log = int(overlap/2) if y2 != 0 else 0
                 y1_log = tile_size - int(overlap/2) if yi + tile_size < H else tile_size
                 x1_log = tile_size - int(overlap/2) if xi + tile_size < W else tile_size
-                print(y0_log, y1_log, x0_log, x1_log)
-                print('---')
+                # print(y0_log, y1_log, x0_log, x1_log)
+                # print('---')
                 # y1_log
 
                 # prob_acc[yi:yi+tile_size, xi:xi+tile_size] += probs[i, 1, ...].reshape((tile_size, tile_size))

@@ -26,24 +26,30 @@ def multi_training(trainings, args):
 
 if __name__ == "__main__":
     trainings = [
-    #     {
-    #         'dataset.dataset_dir': 'data/dataset_Bern_v2_and_false_pos_0.5',
-    #         'train.output_suffixe': "Bern_v2_focal_dice_losses_with_1800_false_pos_from_scratch",
-    #         'train.resume_from_existing': True,
-    #     },
-    #     {
-    #         'dataset.dataset_dir': 'data/dataset_Bern_v2_and_false_pos_0.25',
-    #         'train.output_suffixe': "Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch",
-    #     },
         {
-            'dataset.dataset_dir': 'data/dataset_Bern_v2',
-            'train.output_suffixe': "Bern_v2_focal_dice_losses_from_scratch_da_scaling",
-            'train.do_da_scaling': True,
+            'train.output_suffixe': 'playground_lbl_smoothing_0.001',
+            'train.label_smoothing': 0.001,
         },
         {
-            'dataset.dataset_dir': 'data/dataset_Bern_v2_and_false_pos_0.1',
-            'train.output_suffixe': "Bern_v2_focal_dice_losses_with_360_false_pos_from_scratch",
+            'train.output_suffixe': 'playground_lbl_smoothing_0.01',
         },
+        {
+            'train.output_suffixe': 'playground_lbl_smoothing_0.1',
+            'train.label_smoothing': 0.1,
+        },
+        {
+            'train.output_suffixe': 'landslide_lbl_smoothing_0.01',
+            'dataset.segmenter.dataset_dir': "data/dataset_segmentation_landslide",
+            'train.loss_weights': 'auto',
+        },
+        {
+            'train.output_suffixe': 'playground_fusion_false_pos_lbl_smoothing_0.01',
+            'train.is_trained': 'fusion',
+            'train.num_epochs': 20,
+            'train.batch_size': 16,
+            'train.num_workers': 8,
+        },
+
     ]
 
     conf_train = OmegaConf.load('./config/training.yaml')
