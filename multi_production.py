@@ -26,12 +26,16 @@ Image.MAX_IMAGE_PIXELS = None
 
 def prob_to_rgb(prob_map, cmap_name="RdYlBu", range=[0,2**16-1]):
     """
-    prob_map: (H, W) float32 in [0, 1]
-    returns: (H, W, 3) uint8
+    Convert a probability map to an RGB image using a colormap.
+    Parameters: 
+        prob_map (np.ndarray) - 2D probability map; 
+        cmap_name (str) - name of the matplotlib colormap used for color mapping; 
+        range (list[int]) - value range used for normalization.
+    Returns: 
+        np.ndarray - RGB image array of shape (H, W, 3) with dtype uint8.
     """
+
     cmapRB = cm.get_cmap(cmap_name)
-    # print(np.min(prob_map))
-    # print(np.max(prob_map))
     prob_map = prob_map.astype(np.float32) / 255
 
     colors_RB = [cmapRB(i) for i in np.linspace(0,1, 100)]
@@ -46,6 +50,14 @@ def prob_to_rgb(prob_map, cmap_name="RdYlBu", range=[0,2**16-1]):
 
 
 def postprocess(src_pred):
+    """
+    Postprocess prediction outputs by generating transparent masks, colorized probability maps, and transferring georeferencing.
+    Parameters: 
+        src_pred (str) - path to the directory containing prediction outputs.
+    Returns: 
+        None.
+    """
+
     src_masks = os.path.join(src_pred, 'masks')
     src_probas = os.path.join(src_pred, 'probas')
     os.makedirs(src_masks, exist_ok=True)
@@ -59,13 +71,12 @@ def postprocess(src_pred):
         )
         with rasterio.open(src_mask) as src:
             img_arr = np.transpose(np.astype(src.read(),np.uint8), (1,2,0))
-        # print(img_arr.shape)
-        # img_arr = np.array(Image.open(src_mask), dtype=np.uint8)
+
         img_arr_transparent = np.zeros((img_arr.shape[0], img_arr.shape[1], 4), dtype=np.uint8)
         img_arr_transparent[...,:3] = img_arr
         mask = img_arr[:,:,0] == 255
         img_arr_transparent[:,:,3][mask] = 255
-        # Image.fromarray(img_arr_transparent).save(src_mask.replace('img', 'transparent'))
+        
         tiff.imwrite(src_mask.replace('img', 'transparent'), img_arr_transparent, compression="zstd", compressionargs={"level": 9})
         geo_transfert(src_mask, src_mask.replace('img', 'transparent'), True)
 
@@ -83,7 +94,7 @@ def postprocess(src_pred):
         img_rgb_transparent = np.zeros((img_arr.shape[0], img_arr.shape[1], 4), dtype=np.uint8)
         img_rgb_transparent[..., :3] = img_rgb
         img_rgb_transparent[..., 3][img_arr >= 0.05 * 255] = 255
-        # Image.fromarray(img_rgb_transparent).save(os.path.splitext(src_proba)[0] + f"_transparent{os.path.splitext(src_proba)[1]}")
+        
         src_img_transparent = os.path.splitext(src_proba)[0] + f"_transparent{os.path.splitext(src_proba)[1]}"
         tiff.imwrite(src_img_transparent, img_rgb_transparent, compression="zstd", compressionargs={"level": 9})
         geo_transfert(src_proba, src_img_transparent, True)
@@ -95,6 +106,16 @@ def postprocess(src_pred):
 
 
 def multi_production(configs, args, verbose=False):
+    """
+    Run production for multiple configurations by generating temporary config files, launching prediction subprocesses, and postprocessing results.
+    Parameters: 
+        configs (list[dict]) - list of configuration overrides for each production run; 
+        args (OmegaConf) - base configuration used as template; 
+        verbose (bool) - whether to print configuration details for each run.
+    Returns: 
+        None.
+    """
+    
     src_res_prod = "./results/production"
     if os.path.exists(os.path.join(src_res_prod, 'problematic_confs.pickle')):
         os.remove(os.path.join(src_res_prod, 'problematic_confs.pickle'))

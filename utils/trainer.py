@@ -34,6 +34,13 @@ logger = logging.get_logger(__name__)
 
 
 def collate_with_filename(batch):
+    """
+    Custom collate function that preserves filenames while batching tensor fields.
+    Parameters: 
+        batch (list[dict]) - list of dataset samples containing tensors and a "filename" field.
+    Returns: 
+        dict - batched tensors with filenames stored as a list.
+    """
     
     # Normal collate for tensor fields
     batch_collated = default_collate([{k: v for k, v in sample.items() if k != "filename"} 
@@ -46,6 +53,15 @@ def collate_with_filename(batch):
 
 
 def logits_to_preds(logits, do_upscale=True):
+    """
+    Convert model logits to predicted class masks, optionally upscaling logits beforehand.
+    Parameters: 
+        logits (np.ndarray or torch.Tensor) - model output logits with shape (B, C, H, W); 
+        do_upscale (bool) - whether to upscale logits before computing predictions.
+    Returns: 
+        np.ndarray - predicted class masks with shape (B, H, W).
+    """
+
     # Resize predictions to match label size
     if do_upscale:
         logits = torch.nn.functional.interpolate(
@@ -57,8 +73,19 @@ def logits_to_preds(logits, do_upscale=True):
 
     # Final predicted class mask
     return logits.argmax(dim=1).cpu().numpy()  # (batch_size, H_lbl, W_lbl)
-    
+
+
 def dice_loss(logits, targets, eps=1e-6):
+    """
+    Compute Dice loss for multi-class segmentation.
+    Parameters: 
+        logits (torch.Tensor) - model logits with shape (B, C, H, W); 
+        targets (torch.Tensor) - ground truth labels with shape (B, H, W); 
+        eps (float) - numerical stability constant.
+    Returns: 
+        torch.Tensor - scalar Dice loss value.
+    """
+
     probs = torch.softmax(logits, dim=1)
     targets_onehot = F.one_hot(targets, num_classes=logits.shape[1]).permute(0, 3, 1, 2)
 
@@ -77,8 +104,15 @@ def focal_loss(
     ignore_index: int = 255,
 ):
     """
-    logits: (B, 2, H, W)
-    targets: (B, H, W)
+    Compute focal loss for segmentation tasks with optional ignored labels.
+    Parameters: 
+        logits (torch.Tensor) - model logits with shape (B, C, H, W); 
+        targets (torch.Tensor) - ground truth labels with shape (B, H, W); 
+        alpha (float) - weighting factor for positive samples; 
+        gamma (float) - focusing parameter for hard examples; 
+        ignore_index (int) - label value to ignore in loss computation.
+    Returns: 
+        torch.Tensor - scalar focal loss value.
     """
 
     # 1) Convert logits into probabilities (softmax)
@@ -107,6 +141,16 @@ def focal_loss(
 
 
 class TrainValMetricsTrainer(Trainer):
+    """
+    Custom HuggingFace Trainer that computes training and validation metrics, logs losses, and saves confusion matrices during evaluation.
+    Parameters: 
+        confmat_dir (str) - directory where confusion matrices and related outputs are saved; 
+        label_smoothing (float) - smoothing factor used in cross-entropy loss; 
+        loss_weights (str or list[float]) - class weights for loss computation or 'auto' to compute them from the dataset.
+    Returns: 
+        TrainValMetricsTrainer - trainer instance with extended training and evaluation behavior.
+    """
+
     def __init__(self, confmat_dir, label_smoothing=0.1, loss_weights='auto', *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -165,16 +209,6 @@ class TrainValMetricsTrainer(Trainer):
                     mode="bilinear",
                     align_corners=False
                 )
-            # else:   # if model is fusion
-            #     logits = outputs[0].logits
-        
-            # logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0].logits # (B, C, H, W)
-            # logits = torch.nn.functional.interpolate(
-            #     logits,
-            #     size=labels.shape[-2:],
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
 
             preds = logits.detach().cpu().numpy()
             labs = labels.detach().cpu().numpy()
@@ -352,6 +386,15 @@ class TrainValMetricsTrainer(Trainer):
 
 
 class ScaleAttention(nn.Module):
+    """
+    Attention module that learns scale-wise weights to fuse logits from multiple image scales.
+    Parameters: 
+        n_scales (int) - number of input scales used in multi-scale inference; 
+        n_classes (int) - number of segmentation classes.
+    Returns: 
+        torch.Tensor - fused logits of shape (B, C, H, W) and attention weights.
+    """
+
     def __init__(self, n_scales, n_classes):
         super().__init__()
         self.n_scales = n_scales
@@ -382,15 +425,21 @@ class ScaleAttention(nn.Module):
         fused = (weights.unsqueeze(2) * logits).sum(dim=1)  # [B, C, H, W]
 
         return fused, weights
-        
-
 
     
 def sliding_window_inference(model, image, window=512, stride=512, device="cuda"):
     """
-    image: [1, 3, H, W]
-    returns: stitched logits [1, C, H, W]
+    Perform sliding window inference to generate segmentation logits for large images.
+    Parameters: 
+        model (torch.nn.Module) - segmentation model used for inference; 
+        image (torch.Tensor) - input image tensor with shape (B, C, H, W); 
+        window (int) - size of the inference window; 
+        stride (int) - stride between consecutive windows; 
+        device (str or torch.device) - device used for inference.
+    Returns: 
+        torch.Tensor - stitched logits with shape (B, C, H, W).
     """
+
     overlap = window - stride
     B, _, H, W = image.shape
     C = model.config.num_labels
@@ -441,8 +490,14 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
 
 def multiscale_logits(model, image_2048, scales, device="cuda"):
     """
-    image_2048: [1, 3, 2048, 2048]
-    returns: list of aligned logits [1, C, 2048, 2048] per scale
+    Perform inference at multiple scales and align logits back to the original resolution.
+    Parameters: 
+        model (torch.nn.Module) - segmentation model used for inference; 
+        image_2048 (torch.Tensor) - input image tensor with shape (B, C, 2048, 2048); 
+        scales (list[float]) - list of scale factors applied to the image; 
+        device (str or torch.device) - device used for inference.
+    Returns: 
+        list[torch.Tensor] - list of aligned logits per scale with shape (B, C, 2048, 2048).
     """
 
     logits_per_scale = []
@@ -532,6 +587,16 @@ def multiscale_logits(model, image_2048, scales, device="cuda"):
 
 
 class MultiScaleFusionModel(nn.Module):
+    """
+    Multi-scale segmentation model that combines a frozen SegFormer with a learned fusion module to merge predictions across scales.
+    Parameters: 
+        segformer (torch.nn.Module) - pretrained SegFormer segmentation backbone; 
+        scales (list[float]) - list of scale factors used during inference; 
+        device (torch.device or str) - device on which the model is executed.
+    Returns: 
+        MultiScaleFusionModel - model producing fused segmentation logits from multi-scale predictions.
+    """
+
     def __init__(self, segformer, scales, device=None):
         super().__init__()
 
@@ -624,24 +689,16 @@ class MultiScaleFusionModel(nn.Module):
         **kwargs
     ):
         """
-        Load a pretrained SegFormer and wrap it with the fusion module.
-
-        Args:
-            segformer_model_name_or_path (str):
-                HuggingFace model name or local checkpoint path.
-            scales (list[float]):
-                List of scale factors.
-            fusion_checkpoint (str, optional):
-                Path to saved fusion model weights.
-            num_labels (int):
-                Number of segmentation classes.
-            map_location (str or torch.device):
-                Device for loading checkpoints.
-            **kwargs:
-                Extra args forwarded to HF from_pretrained.
-
-        Returns:
-            MultiScaleFusionModel
+        Load a pretrained SegFormer model and initialize the multi-scale fusion model.
+        Parameters: 
+            segformer_model_name_or_path (str) - HuggingFace model name or local checkpoint path; 
+            scales (list[float]) - list of scale factors used for multi-scale inference; 
+            fusion_checkpoint (str) - optional path to saved fusion model weights; 
+            num_labels (int) - number of segmentation classes; 
+            device (torch.device or str) - device used for loading the model; 
+            **kwargs - additional arguments passed to the HuggingFace loader.
+        Returns: 
+            MultiScaleFusionModel - initialized fusion model with optional pretrained weights.
         """
 
         # 1️⃣ Load pretrained SegFormer

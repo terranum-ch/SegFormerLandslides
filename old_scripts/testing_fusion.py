@@ -103,7 +103,6 @@ def run_testing(conf):
 
     processor = AutoImageProcessor.from_pretrained(ckpt_path)
     model = MultiScaleSegformer.from_pretrained(ckpt_path)
-    # model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
     model.to(DEVICE)
     model.eval()
 

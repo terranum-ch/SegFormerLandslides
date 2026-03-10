@@ -7,6 +7,7 @@ import gc
 import json
 import argparse
 import torch
+from torch import nn
 from torch.utils.data import Subset, random_split
 from transformers import (
     AutoImageProcessor,
@@ -43,18 +44,39 @@ warnings.filterwarnings('ignore', category=NotGeoreferencedWarning)
 
 @contextmanager
 def mute_logging(level=logging.CRITICAL):
+    """
+    Temporarily disable Python logging below a given level. 
+    Parameters: level (int) – logging level threshold to disable during the context. 
+    Returns: None – restores the previous logging state when exiting the context.
+    """
+
+    # Store current logging disable level
     previous_level = logging.root.manager.disable
+
+    # Disable logging
     logging.disable(level)
+
     try:
         yield
     finally:
+        # Restore previous logging state
         logging.disable(previous_level)
 
 
 def get_best_checkpoint(training_dir):
+    """
+    Retrieve the checkpoint with the highest training step in a directory.
+    Parameters: training_dir (str) – directory containing HuggingFace checkpoints.
+    Returns: str – full path to the checkpoint with the largest step number.
+    """
+
+    # List all checkpoint folders (excluding "last" folders)
     lst_checkpoints = [x for x in os.listdir(training_dir) if 'checkpoint' in x and not 'last' in x and os.path.isdir(os.path.join(training_dir, x))]
 
+    # Extract step numbers
     lst_steps = [int(x.split('-')[-1]) for x in lst_checkpoints]
+
+    # Identify highest step
     best_step = np.max(lst_steps)
     best_checkpoint = [x for x in lst_checkpoints if str(best_step) in x][0]
 
@@ -62,6 +84,15 @@ def get_best_checkpoint(training_dir):
 
 
 def training(args):
+    """
+    Run the full training pipeline for the segmentation or fusion model.
+    Parameters: args (OmegaConf / argparse namespace) – configuration containing training, dataset, and model parameters.
+    Returns: str – path to the directory where training results are stored.
+    """
+
+    # ========================================
+    # === PARAMETERS LOADING =================
+    
     OUTPUT_DIR = rf"{args.train.output_dir}"
     OUTPUT_SUFFIXE = args.train.output_suffixe
     VAL_SPLIT = args.train.val_split
@@ -76,6 +107,7 @@ def training(args):
     PRETRAINED_MODEL = args.train.pretrained_model
     IS_TRAINED = args.train.is_trained
     
+    NUM_LAYERS = args.train.num_layers
     SCALES = args.train.scales
     FROM_PRETRAIN = args.train.from_pretrain
     PRETRAIN_DIR = args.train.pretrain_dir
@@ -83,6 +115,7 @@ def training(args):
     RESUME_FROM_EXISTING = args.train.resume_from_existing
     EXISTING_DIR_TO_RESUME_FROM = os.path.join(args.train.existing_dir, 'last_checkpoint') if RESUME_FROM_EXISTING else None
 
+    IS_RGB = args.dataset.is_rgb
     DATASET_DIR_SEG = args.dataset.segmenter.dataset_dir
     TRAINING_SET_DIR = args.dataset.segmenter.trainset_dir
     VALIDATION_SET_DIR = args.dataset.segmenter.valset_dir
@@ -120,6 +153,10 @@ def training(args):
 
     time_start = time()
 
+
+    # ========================================
+    # === MODEL LOADING ======================
+
     # Load model + processor
     with mute_logging():
         processor = AutoImageProcessor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512", use_fast=True) if IS_TRAINED == 'segmenter' else None
@@ -132,6 +169,36 @@ def training(args):
             num_labels=2,
             ignore_mismatched_sizes=True  # <- Important for custom classes
         )
+    
+    # Get original conv
+    old_conv = segformer.segformer.encoder.patch_embeddings[0].proj
+
+    # Create new conv with 4 input channels
+    new_conv = nn.Conv2d(
+        in_channels=NUM_LAYERS,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=old_conv.bias is not None
+    )
+
+    # Initialize weights
+    with torch.no_grad():
+        # Copy RGB weights
+        new_conv.weight[:, :3, :, :] = old_conv.weight
+
+        # Initialize DEM channel (3 options)
+        # new_conv.weight[:, 3:4, :, :] = old_conv.weight.mean(dim=1, keepdim=True)
+        # OR zeros:
+        # new_conv.weight[:, 3:4, :, :] = 0
+        # OR random init:
+        nn.init.kaiming_normal_(new_conv.weight[:, 3:4, :, :])
+
+    # Replace layer
+    segformer.segformer.encoder.patch_embeddings[0].proj = new_conv
+
+    # define model depending on type of training
     if IS_TRAINED == 'segmenter':
         model = segformer
     elif IS_TRAINED == 'fusion':
@@ -145,6 +212,9 @@ def training(args):
     else:
         raise AttributeError('"is_trained" NOT CORRECT in training.yaml')
 
+
+    # ========================================
+    # === TRANSFORM AND DATASET ======================
     
     # Defining a transform for data augmentation
     list_transforms = [A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5), A.RandomRotate90(p=0.5)]
@@ -156,12 +226,16 @@ def training(args):
         full_dataset_train = SegmentationDataset(
             data_dir= DATASET_DIR,
             processor=processor,
+            num_layers=NUM_LAYERS,
+            is_rgb=IS_RGB,
             transform=None,
         )
 
         full_dataset_val = SegmentationDataset(
             data_dir= DATASET_DIR,
             processor=processor,
+            num_layers=NUM_LAYERS,
+            is_rgb=IS_RGB,
             transform=None,
         )
 
@@ -180,11 +254,15 @@ def training(args):
         train_subset = SegmentationDataset(
             data_dir= TRAINING_SET_DIR,
             processor=processor,
+            num_layers=NUM_LAYERS,
+            is_rgb=IS_RGB,
             transform=None,
         )
         val_subset = SegmentationDataset(
             data_dir= VALIDATION_SET_DIR,
             processor=processor,
+            num_layers=NUM_LAYERS,
+            is_rgb=IS_RGB,
             transform=None,
         )
     else:
@@ -195,6 +273,10 @@ def training(args):
             train_subset.dataset.transform = train_transform
         else:
             train_subset.transform = train_transform
+
+
+    # ========================================
+    # === TRAINING ===========================
 
     # Training arguments
     training_args = TrainingArguments(
@@ -252,6 +334,10 @@ def training(args):
     # Train
     trainer.train(resume_from_checkpoint=EXISTING_DIR_TO_RESUME_FROM)
 
+
+    # ========================================
+    # === SAVING RESULTS =====================
+    
     # Save final model
     trainer.save_model(os.path.join(RESULTS_DIR, "segformer_trained_model"))
     if processor is not None:
@@ -297,20 +383,21 @@ def training(args):
         list_val_sample_names = [(val_subset.dataset.images[x], val_subset.dataset.masks[x]) for x in val_subset.indices]
 
         ckpt_path = os.path.join(RESULTS_DIR, f'checkpoint-{best_step}')
-        if IS_TRAINED == 'segmenter':
-            model = SegformerForSemanticSegmentation.from_pretrained(
-                ckpt_path, 
-                num_labels=2,
-                ignore_mismatched_sizes=True  # <- Important for custom classes
-                )
-        else:
-            model  = MultiScaleFusionModel.from_pretrained(
-                segformer_model_name_or_path=get_best_checkpoint(PRETRAIN_DIR),
-                scales=SCALES,
-                fusion_checkpoint=ckpt_path,
-                num_labels=2,
-                device=DEVICE,
-                )
+        with mute_logging():
+            if IS_TRAINED == 'segmenter':
+                model = SegformerForSemanticSegmentation.from_pretrained(
+                    ckpt_path, 
+                    num_labels=2,
+                    ignore_mismatched_sizes=True  # <- Important for custom classes
+                    )
+            else:
+                model  = MultiScaleFusionModel.from_pretrained(
+                    segformer_model_name_or_path=get_best_checkpoint(PRETRAIN_DIR),
+                    scales=SCALES,
+                    fusion_checkpoint=ckpt_path,
+                    num_labels=2,
+                    device=DEVICE,
+                    )
         DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
         model.to(DEVICE)
         model.eval()
@@ -376,37 +463,16 @@ def training(args):
 
 
 if __name__ == "__main__":
-    # ckpt_path = r"D:\GitHubProjects\Terranum_repo\LandSlides\segformerlandslides\results\training\20260305_090808_segmenter_3_epochs_test\last_checkpoint"
-    
-    # # model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
-    # model = SegformerForSemanticSegmentation.from_pretrained(
-    #         ckpt_path,
-    #         num_labels=2,
-    #         ignore_mismatched_sizes=True  # <- Important for custom classes
-    #     )
-    # DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # model.to(DEVICE)
-    # model.eval()
-    # quit()
-
-
-
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="")
     args = parser.parse_args()
     cfg_path = args.config
-
-    print(cfg_path)
 
     if cfg_path != "":
         print("- Training from argument - ")
         args = OmegaConf.load(cfg_path)
     else:
         print("- Training from yaml file - ")
-        conf_train = OmegaConf.load('./config/training.yaml')
-        conf_dataset = OmegaConf.load('./config/dataset.yaml')
-
-        args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+        args = OmegaConf.load('./config/training.yaml')
 
     training(args)

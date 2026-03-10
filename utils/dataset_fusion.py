@@ -195,9 +195,11 @@ class SegFusionDataset(Dataset):
 
 
 class SegmentationDataset(Dataset):
-    def __init__(self, data_dir, processor, transform=None):
+    def __init__(self, data_dir, processor, num_layers=3, is_rgb=True, transform=None):
         self.data_dir = data_dir
         self.processor = processor
+        self.num_layers = num_layers
+        self.is_rgb = is_rgb
         self.transform = transform
 
         self.images = []
@@ -212,17 +214,14 @@ class SegmentationDataset(Dataset):
         self.masks = [x for row in self.masks for x in row]
 
         assert len(self.images) == len(self.masks), "Image/mask count mismatch"
+        if is_rgb:
+            assert num_layers == 3
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        # img_path = os.path.join(self.image_dir, self.images[idx])
-        # mask_path = os.path.join(self.mask_dir, self.masks[idx])
-
-        # image = np.array(Image.open(img_path).convert("RGB"))
-        # mask = np.array(Image.open(mask_path)).astype("int64")
-        image = np.moveaxis(rasterio.open(self.images[idx]).read(), 0, 2)[..., :3]
+        image = np.moveaxis(rasterio.open(self.images[idx]).read(), 0, 2)[..., :self.num_layers]
         mask = np.moveaxis(rasterio.open(self.masks[idx]).read(), 0, 2)
 
         # Apply augmentation
@@ -233,21 +232,24 @@ class SegmentationDataset(Dataset):
 
         if self.processor is not None:
             inputs = self.processor(images=image, segmentation_maps=mask.squeeze(-1), return_tensors="pt")
-            inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)
-            inputs["labels"] = inputs["labels"].squeeze(0)
+            inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)  # HF returns tensors with extra batch dim, we remove manually
+            inputs["labels"] = inputs["labels"].squeeze(0)              # HF returns tensors with extra batch dim, we remove manually
             inputs['filename'] = self.images[idx]
         else:
             imgs = image.astype(np.float32) / 255.0
-            mean = np.array([0.485, 0.456, 0.406])[None, None, :]
-            std  = np.array([0.229, 0.224, 0.225])[None, None, :]
-            imgs = (imgs - mean) / std
-
-            # HF returns tensors with extra batch dim, we remove manually
+            if self.is_rgb:
+                mean = np.array([0.485, 0.456, 0.406])[None, None, :]
+                std  = np.array([0.229, 0.224, 0.225])[None, None, :]
+                imgs = (imgs - mean) / std
+            else:
+                imgs = (imgs - self.means[None, None, :]) / self.stds[None, None, :]
+                
             inputs = {
                 "pixel_values": torch.from_numpy(imgs).float(),
                 'labels': torch.from_numpy(mask).squeeze(-1).long(),
                 'filename': self.images[idx]
             }
+            
 
         return inputs
     

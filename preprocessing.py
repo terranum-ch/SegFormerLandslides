@@ -20,10 +20,17 @@ warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarni
 warnings.filterwarnings('ignore', category=UserWarning)
 
 
-# --------------------------------------
-# --- UTILS ----------------------------
+def resize_to(img, to, is_mask=False):
+    """
+    Resize an image or mask to a square target size.
+    Parameters: 
+        img (np.ndarray) - input image or mask array; 
+        to (int) - target output size (to x to); 
+        is_mask (bool) - whether the input is a mask (nearest interpolation).
+    Returns: 
+        np.ndarray - resized image or mask.
+    """
 
-def resize_to(img, to,is_mask=False):
     interp = cv2.INTER_NEAREST if is_mask else cv2.INTER_LINEAR
     interp = cv2.INTER_NEAREST
 
@@ -40,8 +47,12 @@ def resize_to(img, to,is_mask=False):
 
 def center_crop(img, crop_size):
     """
-    img: (H, W, C) or (H, W)
-    crop_size: int
+    Extract a centered square crop from an image or mask.
+    Parameters: 
+        img (np.ndarray) - input image or mask array; 
+        crop_size (int) - size of the square crop.
+    Returns: 
+        np.ndarray - cropped image or mask.
     """
     if img.ndim == 3:
         H, W, _ = img.shape
@@ -62,8 +73,11 @@ def center_crop(img, crop_size):
 
 def label_to_mask(label):
     """
-    Input: mask - WxHx4 - values 0-255
-    Output: mask_out - WxH - values 0-1
+    Convert a multi-channel label image into a binary mask.
+    Parameters: 
+        label (np.ndarray) - input label image with values in [0-255].
+    Returns: 
+        np.ndarray - binary mask with values {0,1}.
     """
     label = label[...,0]
     label[label != 0] = 1
@@ -71,6 +85,17 @@ def label_to_mask(label):
 
 
 def extract_random_sample(img_arr, mask_arr, shift_based_on_size, tile_size):
+    """
+    Extract a randomly shifted square sample from an image and its corresponding mask.
+    Parameters: 
+        img_arr (np.ndarray) - source image array; 
+        mask_arr (np.ndarray) - corresponding label array; 
+        shift_based_on_size (int) - maximum random shift allowed; 
+        tile_size (int) - size of the extracted sample.
+    Returns: 
+        tuple[np.ndarray, np.ndarray] - sampled image tile and its corresponding mask tile.
+    """
+
     H, W = img_arr.shape[0], img_arr.shape[1]
     starting_point_x = (W - tile_size) // 2
     starting_point_y = (H - tile_size) // 2
@@ -90,6 +115,14 @@ def extract_random_sample(img_arr, mask_arr, shift_based_on_size, tile_size):
 
 
 def preprocessing(args):
+    """
+    Generate training datasets for the segmentation and/or fusion models from tiled images and masks.
+    Parameters: 
+        args (OmegaConf) - configuration containing preprocessing, dataset, and sampling parameters.
+    Returns: 
+        None - writes processed datasets and statistics to disk.
+    """
+
     # General args
     DATASET_TYPE = args.preprocessing.dataset_type
     TILES_LOC = args.preprocessing.tiles_location
@@ -120,8 +153,10 @@ def preprocessing(args):
 
     list_tiles_img = [x for x in os.listdir(TILES_IMG_SRC) if os.path.splitext(x)[1].lower() in ['.png', '.tif', '.tiff']]
 
+
     # --------------------------------------
     # --- CREATION OF FUSION DATASET -------
+
     if DATASET_TYPE in ['fusion', 'both']:
         print("PRODUCING DATASET FOR FUSION:")
         dataset_base_src = os.path.join(RESULTS_SRC, f"dataset_fusion_{SUFFIXE}")
@@ -160,8 +195,10 @@ def preprocessing(args):
             tiff.imwrite(src_new_mask, mask, compression="zstd", compressionargs={"level": 9})
             tiff.imwrite(src_new_label, label, compression="zstd", compressionargs={"level": 9})
 
+
     # --------------------------------------
     # --- CREATION OF SEGMENTER DATASET ----
+
     if DATASET_TYPE in ['segmenter', 'both']:
         print("PRODUCING DATASET FOR SEGMENTATION:")
         dataset_base_src = os.path.join(RESULTS_SRC, f"dataset_segmenter_{SUFFIXE}")
@@ -231,7 +268,6 @@ def preprocessing(args):
         ax.grid()
         
         plt.title("Fraction of occupied samples")
-        # plt.show()
         saving_loc = os.path.join(dataset_base_src, 'fraction_of_occupied.png')
         plt.savefig(saving_loc)
         plt.savefig(saving_loc.split('.')[0] + '.eps', format='eps')

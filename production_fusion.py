@@ -42,6 +42,19 @@ def tiles_downloading(
         year=None,
         dest_not_empty='add'
         ):
+    """
+    Download SwissImage tiles from Swisstopo based on a selected geographic mode.
+    Parameters: 
+        dest_tiles (str) - destination directory for downloaded tiles; 
+        downloading_mode (str) - selection mode ("canton", "area", "year", "full"); 
+        canton (str) - canton name when using canton mode; 
+        area (object) - area definition with Emin/Emax/Nmin/Nmax when using area mode; 
+        year (int) - acquisition year when using year mode; 
+        dest_not_empty (str) - behavior if destination contains files ("add", "replace", "stop").
+    Returns: 
+        list[str] - list of file paths to downloaded tiles.
+    """
+
     tiles_to_download = []
     lst_tiles_src = []
     os.makedirs(dest_tiles, exist_ok=True)
@@ -117,120 +130,19 @@ def tiles_downloading(
     return lst_tiles_src
 
 
-# def prediction(
-#         src_img, 
-#         src_inter, 
-#         src_dest_preds, 
-#         src_dest_probas, 
-#         scales, 
-#         model_seg_dir,
-#         model_fus_dir, 
-#         batch_size=8,
-#         tile_size=512, 
-#         stride=256, 
-#         threshold_proba= 0.5, 
-#         threshold_grouping=0.5,
-#         do_save_inter=True,
-#         do_save_mask=True,
-#         do_save_img=True,
-#         do_save_probas=True,
-#         ):
-    
-#     # predict at each resolution
-#     images = []
-#     preds = []
-#     masks = {}
-#     probas = []
-
-#     # load model
-#     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-#     # ckpt_path = load_latest_checkpoint(model_dir)
-#     # model = SegformerForSemanticSegmentation.from_pretrained(ckpt_path)
-#     # model.to(DEVICE)
-#     # model.eval()
-
-#     model  = MultiScaleFusionModel.from_pretrained(
-#         segformer_model_name_or_path=load_latest_checkpoint(model_seg_dir),
-#         scales=[1.0, 0.75, 0.5, 0.25],
-#         fusion_checkpoint=load_latest_checkpoint(model_fus_dir),
-#         num_labels=2,
-#         map_location=DEVICE,
-#     )
-#     model.eval()
-    
-#     for res in scales:
-#         res_img, src_res_img = produce_with_lower_res(src_img, src_inter, res, do_show=False)
-#         pred_mask, preds_img, proba_img = predict_with_batch_fusion(
-#             image=res_img, 
-#             model=model, 
-#             img_path=src_res_img,
-#             batch_size=batch_size,
-#             tile_size=tile_size,
-#             stride=stride,
-#             th=threshold_proba, 
-#             do_show=False,
-#             do_save=False,
-#             do_save_mask_as_img=False,
-#             )
-#         images.append(res_img)
-#         preds.append(preds_img)
-#         # masks.append(pred_mask)
-#         masks[res] = pred_mask
-#         probas.append(proba_img)
-
-#     # merge different resolutions into one final
-#     original_img = Image.open(src_img)
-
-#     W, H = original_img.size
-
-#     #   _creation of final preds
-#     final_product = np.zeros((H, W), dtype=np.float32)
-
-#     for res, mask in masks.items():
-#         rescaled_mask = Image.fromarray(mask).resize((W, H), Image.NEAREST)
-#         final_product += rescaled_mask
-
-#         if do_save_inter:
-#             src_dest_preds_mask = os.path.join(src_inter, os.path.splitext(os.path.basename(src_img))[0] + f'_res_{res}_preds_mask.tif')
-#             tiff.imwrite(src_dest_preds_mask, rescaled_mask, compression="zstd", compressionargs={"level": 9})
-
-#     final_product /= len(masks)
-#     final_product[final_product >= threshold_grouping] = 1
-#     final_product[final_product < threshold_grouping] = 0
-#     final_product = final_product.astype(np.uint8)
-
-#     final_product_rgb = np.zeros((W, H, 3))
-#     final_product_rgb[final_product == 1] = 255
-
-#     src_final_preds_mask = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_mask.tif')
-#     src_final_preds_img = os.path.join(src_dest_preds, os.path.splitext(os.path.basename(src_img))[0] + f'_img.tif')
-#     src_final_probas_mask = os.path.join(src_dest_probas, os.path.splitext(os.path.basename(src_img))[0] + f'_probas.tif')
-
-#     if do_save_mask:
-#         tiff.imwrite(src_final_preds_mask, final_product.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-#     if do_save_img:
-#         tiff.imwrite(src_final_preds_img, final_product_rgb.astype(np.uint8), compression="zstd", compressionargs={"level": 9})
-
-
-#     if do_save_probas:
-#         #   _creation of final probas
-#         final_probas = np.zeros((W,H), dtype=np.float32)
-
-#         for proba in probas:
-#             rescaled_proba = Image.fromarray(proba).resize((W, H), Image.NEAREST)
-#             final_probas += rescaled_proba
-
-#         final_probas /= len(probas)
-
-#         final_probas = np.clip(final_probas, 0, 1)
-#         final_probas = (final_probas * 255).astype(np.uint8)
-
-#         tiff.imwrite(src_final_probas_mask, final_probas, compression="zstd", compressionargs={"level": 9})
-
-#     return final_product, src_final_preds_mask, src_final_preds_img, src_final_probas_mask#, src_final_probas_img
-
-
 def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_palette, do_save_img=True):
+    """
+    Perform DBSCAN clustering on a binary landslide mask and optionally generate a colored cluster visualization.
+    Parameters: 
+        img_arr (np.ndarray) - binary mask of predicted landslide pixels; 
+        src_dest (str) - base path for saving cluster outputs; 
+        eps (float) - DBSCAN neighborhood radius; min_samples (int) - minimum points to form a cluster; 
+        min_cluster_size (int) - minimum number of pixels required to keep a cluster; 
+        color_palette (list) - RGB color palette used to visualize clusters; 
+        do_save_img (bool) - whether to generate a colored cluster image.
+    Returns: 
+        tuple[str, str] - paths to the saved cluster mask and cluster visualization image.
+    """
     # extract coordinates of landslides
     pos_ls = np.argwhere(img_arr)
 
@@ -288,6 +200,15 @@ def clustering(img_arr, src_dest, eps, min_samples, min_cluster_size,  color_pal
 
 
 def vectorize(src_target, src_dest):
+    """
+    Convert a raster cluster mask into vector polygons and save them as a GeoPackage.
+    Parameters: 
+        src_target (str) - path to the raster mask containing cluster labels; 
+        src_dest (str) - directory where the vector file will be saved.
+    Returns: 
+        str | None - path to the generated GeoPackage or None if no cluster exists.
+    """
+
     with rasterio.open(src_target) as src:
         mask = src.read(1)
         if np.sum(mask) == 0:
@@ -313,6 +234,14 @@ def vectorize(src_target, src_dest):
 
 
 def production(args):
+    """
+    Run the full production pipeline including tile downloading, model inference, clustering, and vectorization.
+    Parameters: 
+        args (OmegaConf / argparse namespace) - configuration containing downloader, prediction, and vectorization parameters.
+    Returns: 
+        None - processes tiles and writes prediction, clustering, and vector outputs to disk.
+    """
+
     start_time = time()
 
     # Load parameters

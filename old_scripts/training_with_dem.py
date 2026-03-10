@@ -16,7 +16,7 @@ from time import time
 from datetime import datetime
 from omegaconf import OmegaConf
 
-from utils.dataset_with_dem import SegmentationDataset
+from old_scripts.dataset_with_dem import SegmentationDataset
 from utils.trainer import TrainValMetricsTrainer, collate_with_filename
 from utils.metrics import compute_metrics
 from utils.callbacks import MetricsCallback, SaveBestPredictionsCallback, SavesCurrentStateCallback

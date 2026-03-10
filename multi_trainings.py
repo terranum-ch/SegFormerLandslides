@@ -5,6 +5,18 @@ import tempfile
 
 
 def multi_training(trainings, args):
+    """
+    Runs multiple training experiments by modifying configuration parameters
+    and launching training.py in a subprocess for each configuration.
+
+    parameters:
+        trainings (list[dict]) : list of parameter overrides for each run
+        args (OmegaConf) : base configuration
+
+    returns:
+        None
+    """
+
     for run in trainings:
         print("TRAINING WITH FOLLOWING SET OF PARAMETERS:")
         args_temp = deepcopy(args)
@@ -52,10 +64,7 @@ if __name__ == "__main__":
 
     ]
 
-    conf_train = OmegaConf.load('./config/training.yaml')
-    conf_dataset = OmegaConf.load('./config/dataset.yaml')
-
-    args= OmegaConf.merge({"train":conf_train, "dataset":conf_dataset})
+    args = OmegaConf.load('./config/training.yaml')
 
     multi_training(trainings, args)
 

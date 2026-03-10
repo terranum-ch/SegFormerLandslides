@@ -1,53 +1,77 @@
-output_dir: "results/training"
-# output_suffixe: fusion_modulus_dice_focal_loss
-# output_suffixe: fusion_modulus
-output_suffixe: test
-# output_suffixe: Bern_v2_focal_dice_losses
-val_split: 0.1
-frac_data: 1.0
-num_epochs: 30
-batch_size: 16
-num_workers: 8
-learning_rate: 5e-5
-weight_decay: 0.01
-label_smoothing: 0.01
-loss_weights: [1,5]
+train:
+  output_dir: "results/training"
+  output_suffixe: test
+  val_split: 0.1
+  frac_data: 0.1
+  num_epochs: 10
+  batch_size: 8
+  num_workers: 4
+  learning_rate: 5e-5
+  weight_decay: 0.01
+  label_smoothing: 0.01
+  loss_weights: [1,5]
 
-is_trained: segmenter  # choose between segmenter and fusion
-scales: [1.0, 0.75, 0.5, 0.25]
-from_pretrain: False
-# pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
-# pretrain_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
-pretrain_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
-resume_from_existing: False
-existing_dir: results/training/20260302_075724_segmenter_50_epochs_playground_16000_label_smoothing_0.1
+  is_trained: segmenter  # choose between segmenter and fusion
+  num_layers: 3
+  scales: [1.0, 0.75, 0.5, 0.25]
+  from_pretrain: False
+  # pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
+  # pretrain_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
+  pretrain_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
+  resume_from_existing: False
+  existing_dir: results/training/20260302_075724_segmenter_50_epochs_playground_16000_label_smoothing_0.1
 
-do_data_augmentation: True
-do_da_scaling: False
-do_save_best_preds: True
+  do_data_augmentation: True
+  do_da_scaling: False
+  do_save_best_preds: True
 
-pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
-# save_preds_lbls: True
+  pretrained_model: nvidia/segformer-b0-finetuned-ade-512-512
+  # save_preds_lbls: True
+
+dataset:
+  is_rgb: False
+  segmenter:
+    # dataset_dir: 'data/dataset_Bern_v2'
+    # dataset_dir: 'data/dataset_Longxi_small'
+    # dataset_dir: 'data/dataset_Longxi_tiny'
+    # dataset_dir: data/dataset_segmentation_playground
+    # dataset_dir: 'data/dataset_Longxi'
+    # dataset_dir: 'data/dataset_Longxi_Bern_v2'
+    # dataset_dir: 'data/test_dem/dataset_with_dem'
+    # dataset_dir: 'data/dataset_false_pos'
+    # dataset_dir: 'data/dataset_Bern_v2_and_false_pos_0.5'
+    # dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
+    dataset_dir: data/dataset_playground_3000
+    # dataset_dir: 'data/dataset_multi_res_with_false_pos'
+    # dataset_dir: 'data/dataset_playground_multires_6000'
+    trainset_dir: data/splitset_Bern_v2_training
+    valset_dir: data/splitset_Bern_v2_validation
+    mode: auto # choose auto for dataset or split for training and validation sets
+  fusion:
+    # dataset_dir: data/dataset_Bern_2048/tiles
+    # dataset_dir: data/dataset_Bern_2048_tiny
+    dataset_dir: data/dataset_fusion_playground
 
 
-# list of pretrained models:
-# nvidia/segformer-b0-finetuned-ade-512-512
-# nvidia/segformer-b0-finetuned-cityscapes-1024-1024
-# nvidia/segformer-b0-finetuned-cityscapes-512-1024
-# nvidia/segformer-b0-finetuned-cityscapes-640-1280
-# nvidia/segformer-b0-finetuned-cityscapes-768-768
-# nvidia/segformer-b1-finetuned-ade-512-512
-# nvidia/segformer-b1-finetuned-cityscapes-1024-1024
-# lsi55/ddpm-ema-nvidia-segformer-b1-finetuned-cityscapes-1024-1024
-# nvidia/segformer-b2-finetuned-cityscapes-1024-1024
-# nvidia/segformer-b2-finetuned-ade-512-512
-# nvidia/segformer-b3-finetuned-ade-512-512
-# nvidia/segformer-b3-finetuned-cityscapes-1024-1024
-# nvidia/segformer-b4-finetuned-ade-512-512
-# nvidia/segformer-b4-finetuned-cityscapes-1024-1024
-# nvidia/segformer-b5-finetuned-ade-640-640
-# nvidia/segformer-b5-finetuned-cityscapes-1024-1024
-# janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5
-# janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5_v2
-# janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5_Almonds
-# janakipanneerselvam/Almond_SegFormer_Sunlit_nvidia_mit-b5
+  # list of pretrained models:
+  # nvidia/segformer-b0-finetuned-ade-512-512
+  # nvidia/segformer-b0-finetuned-cityscapes-1024-1024
+  # nvidia/segformer-b0-finetuned-cityscapes-512-1024
+  # nvidia/segformer-b0-finetuned-cityscapes-640-1280
+  # nvidia/segformer-b0-finetuned-cityscapes-768-768
+  # nvidia/segformer-b1-finetuned-ade-512-512
+  # nvidia/segformer-b1-finetuned-cityscapes-1024-1024
+  # lsi55/ddpm-ema-nvidia-segformer-b1-finetuned-cityscapes-1024-1024
+  # nvidia/segformer-b2-finetuned-cityscapes-1024-1024
+  # nvidia/segformer-b2-finetuned-ade-512-512
+  # nvidia/segformer-b3-finetuned-ade-512-512
+  # nvidia/segformer-b3-finetuned-cityscapes-1024-1024
+  # nvidia/segformer-b4-finetuned-ade-512-512
+  # nvidia/segformer-b4-finetuned-cityscapes-1024-1024
+  # nvidia/segformer-b5-finetuned-ade-640-640
+  # nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+  # janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5
+  # janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5_v2
+  # janakipanneerselvam/SegFormer_Sunlit_nvidia_mit-b5_Almonds
+  # janakipanneerselvam/Almond_SegFormer_Sunlit_nvidia_mit-b5
+

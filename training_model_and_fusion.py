@@ -1,10 +1,14 @@
-import os
 from omegaconf import OmegaConf
 import argparse
-import subprocess
 from training import training
 
 def train_both(conf):
+    """
+    Sequentially train the segmentation model and the fusion model using the same configuration object.
+    Parameters: conf (OmegaConf) – configuration containing training, fusion, and dataset parameters.
+    Returns: None – trains both models and saves their checkpoints to disk.
+    """
+    
     # training segmenter
     print("\n", "="*30)
     print("=== TRAINING SEGMENTER =======")
@@ -26,7 +30,6 @@ def train_both(conf):
     conf.train.num_workers = conf.fusion.fusion.num_workers
     conf.train.is_trained = 'fusion'
     conf.train.pretrained_model = segmenter_model_dir
-    # conf.train.pretrained_model = r"results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale"
     training(conf)
 
 
@@ -45,8 +48,7 @@ if __name__ == "__main__":
         print("- Training from yaml file - ")
         conf_fusion = OmegaConf.load('./config/training_fusion.yaml')
         conf_train = OmegaConf.load('./config/training.yaml')
-        conf_dataset = OmegaConf.load('./config/dataset.yaml')
 
-        args= OmegaConf.merge({"fusion": conf_fusion, "train":conf_train, "dataset":conf_dataset})
+        args= OmegaConf.merge({"fusion": conf_fusion, "train":conf_train.train, "dataset":conf_train.dataset})
 
     train_both(args)
