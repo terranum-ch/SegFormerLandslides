@@ -1,7 +1,7 @@
 downloader:
   # destination: data/test_finetuning/with_multiple_versions/finetuning/test_5
   # destination: data/test_playground
-  destination: data/tests_fusion_production/test_25_fusion_playground_label_smoothing_0.001
+  destination: data/tests_fusion_production/test_35_mean_playground_lbl_smoothing_0.001
   dest_not_empty: replace # choose between 'add', 'stop', 'replace'
   skip_auto_downloading: True
   mode: year  # can be chosen between 'full', 'region', 'area' and 'year'
@@ -29,22 +29,24 @@ predictions:
   # model_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
   # model_dir: results/training/20260215_094129_segmenter_50_epochs_playgrounds_6000
   # model_dir: results/training/20260307_061619_segmenter_30_epochs_landslide_lbl_smoothing_0.01
-  model_dir: results/training/20260219_193329_segmenter_50_epochs_clean_datasets
+  model_dir: results/training/20260310_151132_segmenter_30_epochs_playground_lbl_smoothing_0.001
   # model_seg_dir: results/training/20260219_193329_segmenter_50_epochs_clean_datasets
   # model_seg_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   # model_seg_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
   # model_seg_dir: results/training/20260215_094129_segmenter_50_epochs_playgrounds_6000
-  model_seg_dir: results/training/20260306_164520_segmenter_30_epochs_playground_lbl_smoothing_0.001
+  # model_seg_dir: results/training/20260306_164520_segmenter_30_epochs_playground_lbl_smoothing_0.001
   # model_seg_dir: results/training/20260306_211432_segmenter_30_epochs_playground_lbl_smoothing_0.01
+  model_seg_dir: results/training/20260310_151132_segmenter_30_epochs_playground_lbl_smoothing_0.001
   # model_seg_dir: results/training/20260303_110845_segmenter_30_epochs_playground_16000_no_smoothing
-  model_fus_dir: results/training/20260223_073258_fusion_20_epochs_clean_datasets_playground
+  # model_fus_dir: results/training/20260223_073258_fusion_20_epochs_clean_datasets_playground
   # model_fus_dir: results/training/20260307_180148_fusion_30_epochs_playground_fusion_false_pos_lbl_smoothing_0.01
   # model_fus_dir: results/training/20260219_233821_fusion_20_epochs_landslide_clean_datasets
+  model_fus_dir: results\training\20260312_121510_fusion_5_epochs_test_fusion_global
   batch_size: 4
   threshold_preds: 0.5
   threshold_grouping: 0.5
-  tile_size: 2048
-  overlap: 1024
+  tile_size: 512
+  overlap: 256
   scales: [1.0, 0.75, 0.5, 0.25]
   # resolutions: [0.1, 0.5]
   # resolutions: [1.0]
@@ -59,5 +61,5 @@ to_keep:
   mask_img: False
   probas: True
   weights: True
-  cluster_bin: False
-  cluster_img: False
+  cluster_bin: True
+  cluster_img: True

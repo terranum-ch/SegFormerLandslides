@@ -1,11 +1,11 @@
 train:
   output_dir: "results/training"
-  output_suffixe: test
+  output_suffixe: test_fusion_global
   val_split: 0.1
   frac_data: 0.1
-  num_epochs: 10
-  batch_size: 8
-  num_workers: 4
+  num_epochs: 5
+  batch_size: 2
+  num_workers: 2
   learning_rate: 5e-5
   weight_decay: 0.01
   label_smoothing: 0.01
@@ -17,9 +17,10 @@ train:
   from_pretrain: False
   # pretrain_dir: results/training/20260107_173803_50_epochs_Longxi_Bern_v2_focal_dice_losses
   # pretrain_dir: results/training/20260122_225022_100_epochs_Longxihe_Bern_v2_focal_dice_losses_with_900_false_pos_from_scratch_da_scale
-  pretrain_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
+  # pretrain_dir: results/training/20260211_172648_segmenter_50_epochs_multi_resolution
+  pretrain_dir: results/training/20260310_151132_segmenter_30_epochs_playground_lbl_smoothing_0.001
   resume_from_existing: False
-  existing_dir: results/training/20260302_075724_segmenter_50_epochs_playground_16000_label_smoothing_0.1
+  existing_dir: results/training/20260310_141655_segmenter_10_epochs_test
 
   do_data_augmentation: True
   do_da_scaling: False
@@ -29,7 +30,6 @@ train:
   # save_preds_lbls: True
 
 dataset:
-  is_rgb: False
   segmenter:
     # dataset_dir: 'data/dataset_Bern_v2'
     # dataset_dir: 'data/dataset_Longxi_small'
@@ -41,7 +41,7 @@ dataset:
     # dataset_dir: 'data/dataset_false_pos'
     # dataset_dir: 'data/dataset_Bern_v2_and_false_pos_0.5'
     # dataset_dir: 'data/dataset_Longxi_Bern_v2_false_pos_0.25'
-    dataset_dir: data/dataset_playground_3000
+    dataset_dir: data/dataset_segmentation_playground
     # dataset_dir: 'data/dataset_multi_res_with_false_pos'
     # dataset_dir: 'data/dataset_playground_multires_6000'
     trainset_dir: data/splitset_Bern_v2_training
@@ -49,8 +49,9 @@ dataset:
     mode: auto # choose auto for dataset or split for training and validation sets
   fusion:
     # dataset_dir: data/dataset_Bern_2048/tiles
-    # dataset_dir: data/dataset_Bern_2048_tiny
+    # dataset_dir: data/dataset_Bern_2048_small
     dataset_dir: data/dataset_fusion_playground
+    # dataset_dir: data/dataset_segmentation_landslide
 
 
   # list of pretrained models:

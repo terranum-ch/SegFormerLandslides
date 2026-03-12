@@ -370,17 +370,19 @@ class TrainValMetricsTrainer(Trainer):
             outputs = outputs[0]
             logits = outputs.logits
 
-        ce_loss = torch.nn.functional.cross_entropy(
-            logits,
-            labels.long(),
-            weight=self.class_weights,
-            label_smoothing=self.label_smoothing
-        )
-        # f_loss = focal_loss(logits, labels)
         d_loss = dice_loss(logits, labels)
-
-        # loss = f_loss + 0.5 * d_loss
-        loss = ce_loss + 0.5 * d_loss
+        
+        if self.label_smoothing == 0.0:
+            f_loss = focal_loss(logits, labels)
+            loss = f_loss + 0.5 * d_loss
+        else:
+            ce_loss = torch.nn.functional.cross_entropy(
+                logits,
+                labels.long(),
+                weight=self.class_weights,
+                label_smoothing=self.label_smoothing
+            )
+            loss = ce_loss + 0.5 * d_loss
 
         return (loss, outputs) if return_outputs else loss
 
@@ -426,7 +428,52 @@ class ScaleAttention(nn.Module):
 
         return fused, weights
 
-    
+
+class ScaleAttention_global_KC(nn.Module):
+    def __init__(self, n_scales, n_classes):
+        super().__init__()
+        self.n_scales = n_scales
+        self.n_classes = n_classes
+
+        in_ch = n_scales * n_classes
+
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),  # -> [B, 32, 1, 1]
+            nn.Conv2d(32, n_scales * n_classes, 1)  # -> [B, K*C, 1, 1]
+        )
+
+    def forward(self, stacked_logits):
+        """
+        stacked_logits: [B, K*C, H, W]
+        """
+
+        B, KC, H, W = stacked_logits.shape
+        K = self.n_scales
+        C = self.n_classes
+
+        # === Compute class-aware raw weights ===
+        raw_weights = self.net(stacked_logits)  # [B, K*C, 1, 1]
+
+        # reshape -> [B, K, C, 1, 1]
+        weights = raw_weights.view(B, K, C, 1, 1)
+
+        # Sigmoid gating
+        weights = torch.sigmoid(weights)
+
+        # Normalize across scales PER CLASS
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+
+        # === Separate logits ===
+        logits = stacked_logits.view(B, K, C, H, W)
+
+        # === Weighted fusion per class ===
+        fused = (weights * logits).sum(dim=1)  # [B, C, H, W]
+
+        return fused, weights
+
+
 def sliding_window_inference(model, image, window=512, stride=512, device="cuda"):
     """
     Perform sliding window inference to generate segmentation logits for large images.
@@ -445,7 +492,7 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
     C = model.config.num_labels
 
     output = torch.zeros((B, C, H, W), device=device)
-    counter = torch.zeros((B, 1, H, W), device=device)
+    # counter = torch.zeros((B, 1, H, W), device=device)
 
     for y in range(0, H, stride):
         for x in range(0, W, stride):
@@ -463,7 +510,6 @@ def sliding_window_inference(model, image, window=512, stride=512, device="cuda"
                 patch = F.pad(patch, (0, pad_w, 0, pad_h))
 
             with torch.no_grad():
-                # with torch.amp.autocast(device_type='cuda'):
                 logits = model(pixel_values=patch).logits
 
                 logits = F.interpolate(
@@ -604,7 +650,8 @@ class MultiScaleFusionModel(nn.Module):
         self.segformer.eval()  # frozen
 
         self.scales = scales
-        self.fusion = ScaleAttention(
+        # self.fusion = ScaleAttention(
+        self.fusion = ScaleAttention_global_KC(
             n_classes= 2,
             n_scales=len(self.scales),
         )
@@ -612,8 +659,7 @@ class MultiScaleFusionModel(nn.Module):
         self.device=device
 
     def forward(self, pixel_values, labels=None, return_weights=False):
-
-        B, H, W, C = pixel_values.shape
+        B, C, H, W = pixel_values.shape
         device = pixel_values.device
 
         logits_per_scale = []
@@ -626,7 +672,7 @@ class MultiScaleFusionModel(nn.Module):
                 Ws = int(W * s)
 
                 img_scaled = F.interpolate(
-                    torch.moveaxis(pixel_values,3,1),
+                    pixel_values,
                     size=(Hs, Ws),
                     mode="bilinear",
                     align_corners=False
@@ -661,10 +707,6 @@ class MultiScaleFusionModel(nn.Module):
 
         # 6️⃣ Fuse
         fused_logits, weights = self.fusion(stacked_logits)
-
-        # print(f"Weights: {weights.mean(dim=(0,2,3))}")
-        # print("RAM used: ", psutil.virtual_memory().percent, "%, \nVRAM used: ", round(torch.cuda.memory_allocated()/10**9, 2), "Go")
-        # print('---')
 
         output = SemanticSegmenterOutput(
             loss=None,
@@ -727,6 +769,154 @@ class MultiScaleFusionModel(nn.Module):
 
             model.load_state_dict(fusion_state_dict, strict=False)
         return model.to(device)
+
+
+# class MultiScaleFusionModel(nn.Module):
+#     """
+#     Multi-scale segmentation model that combines a frozen SegFormer with a learned fusion module to merge predictions across scales.
+#     Parameters: 
+#         segformer (torch.nn.Module) - pretrained SegFormer segmentation backbone; 
+#         scales (list[float]) - list of scale factors used during inference; 
+#         device (torch.device or str) - device on which the model is executed.
+#     Returns: 
+#         MultiScaleFusionModel - model producing fused segmentation logits from multi-scale predictions.
+#     """
+
+#     def __init__(self, segformer, scales, device=None):
+#         super().__init__()
+
+#         self.segformer = segformer.to(device)
+#         self.segformer.eval()  # frozen
+
+#         self.scales = scales
+#         # self.fusion = ScaleAttention(
+#         self.fusion = ScaleAttention_global_KC(
+#             n_classes= 2,
+#             n_scales=len(self.scales),
+#         )
+
+#         self.device=device
+
+#     def forward(self, pixel_values, labels=None, return_weights=False):
+#         B, H, W, C = pixel_values.shape
+#         device = pixel_values.device
+
+#         logits_per_scale = []
+
+#         with torch.no_grad():  # freeze segmentation
+#             for s in self.scales:
+
+#                 # 1️⃣ Resize full scene
+#                 Hs = int(H * s)
+#                 Ws = int(W * s)
+
+#                 img_scaled = F.interpolate(
+#                     torch.moveaxis(pixel_values,3,1),
+#                     size=(Hs, Ws),
+#                     mode="bilinear",
+#                     align_corners=False
+#                 )
+
+#                 # # 2️⃣ Sliding window inference
+#                 # logits_scaled = sliding_window_inference(
+#                 #     self.segformer,
+#                 #     img_scaled,
+#                 #     window=512,
+#                 #     stride=256,
+#                 #     device=device
+#                 # )
+
+#                 # 3️⃣ Resize logits back to original resolution
+#                 img_pixelized = F.interpolate(
+#                     img_scaled,
+#                     size=(H, W),
+#                     mode="bilinear",
+#                     align_corners=False
+#                 )
+
+#                 logits_resized = self.segformer(pixel_values=img_pixelized).logits
+#                 logits_resized = F.interpolate(
+#                         logits_resized,
+#                         size=(H, W),
+#                         mode="bilinear",
+#                         align_corners=False
+#                     )
+                
+
+#                 # 4️⃣ Normalize per scale
+#                 # logits_resized = logits_resized / (
+#                 #     logits_resized.std(dim=(2,3), keepdim=True) + 1e-6
+#                 # )
+
+#                 logits_per_scale.append(logits_resized)
+
+#         # 5️⃣ Stack
+#         stacked_logits = torch.cat(logits_per_scale, dim=1)
+
+#         # 6️⃣ Fuse
+#         fused_logits, weights = self.fusion(stacked_logits)
+
+#         output = SemanticSegmenterOutput(
+#             loss=None,
+#             logits=fused_logits,
+#             hidden_states=None,
+#             attentions=None,
+#             )
+        
+#         if return_weights == False:
+#             weights = None
+
+#         return output, weights
+
+#     @classmethod
+#     def from_pretrained(
+#         cls,
+#         segformer_model_name_or_path,
+#         scales,
+#         fusion_checkpoint=None,
+#         num_labels=2,
+#         device=None,
+#         **kwargs
+#     ):
+#         """
+#         Load a pretrained SegFormer model and initialize the multi-scale fusion model.
+#         Parameters: 
+#             segformer_model_name_or_path (str) - HuggingFace model name or local checkpoint path; 
+#             scales (list[float]) - list of scale factors used for multi-scale inference; 
+#             fusion_checkpoint (str) - optional path to saved fusion model weights; 
+#             num_labels (int) - number of segmentation classes; 
+#             device (torch.device or str) - device used for loading the model; 
+#             **kwargs - additional arguments passed to the HuggingFace loader.
+#         Returns: 
+#             MultiScaleFusionModel - initialized fusion model with optional pretrained weights.
+#         """
+
+#         # 1️⃣ Load pretrained SegFormer
+#         segformer = SegformerForSemanticSegmentation.from_pretrained(
+#             segformer_model_name_or_path,
+#             num_labels=num_labels,
+#             # ignore_mismatched_sizes=True,
+#         )
+
+#         # 2️⃣ Build fusion model wrapper
+#         model = cls(
+#             segformer=segformer,
+#             scales=scales,
+#             device=device,
+#         )
+
+#         # 3️⃣ Optionally load fusion weights
+#         if fusion_checkpoint is not None:
+#             ckpt_path = os.path.join(fusion_checkpoint, "model.safetensors")
+
+#             state_dict = load_file(ckpt_path, device=device)
+#             fusion_state_dict = {
+#                 k: v for k, v in state_dict.items()
+#                 if k.startswith("fusion")
+#             }
+
+#             model.load_state_dict(fusion_state_dict, strict=False)
+#         return model.to(device)
 
 
 if __name__ == "__main__":

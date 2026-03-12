@@ -115,7 +115,6 @@ def training(args):
     RESUME_FROM_EXISTING = args.train.resume_from_existing
     EXISTING_DIR_TO_RESUME_FROM = os.path.join(args.train.existing_dir, 'last_checkpoint') if RESUME_FROM_EXISTING else None
 
-    IS_RGB = args.dataset.is_rgb
     DATASET_DIR_SEG = args.dataset.segmenter.dataset_dir
     TRAINING_SET_DIR = args.dataset.segmenter.trainset_dir
     VALIDATION_SET_DIR = args.dataset.segmenter.valset_dir
@@ -160,6 +159,7 @@ def training(args):
     # Load model + processor
     with mute_logging():
         processor = AutoImageProcessor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512", use_fast=True) if IS_TRAINED == 'segmenter' else None
+        processor = None
     
     if FROM_PRETRAIN or IS_TRAINED == 'fusion':
         PRETRAINED_MODEL = get_best_checkpoint(PRETRAIN_DIR)
@@ -227,7 +227,6 @@ def training(args):
             data_dir= DATASET_DIR,
             processor=processor,
             num_layers=NUM_LAYERS,
-            is_rgb=IS_RGB,
             transform=None,
         )
 
@@ -235,7 +234,6 @@ def training(args):
             data_dir= DATASET_DIR,
             processor=processor,
             num_layers=NUM_LAYERS,
-            is_rgb=IS_RGB,
             transform=None,
         )
 
@@ -255,14 +253,12 @@ def training(args):
             data_dir= TRAINING_SET_DIR,
             processor=processor,
             num_layers=NUM_LAYERS,
-            is_rgb=IS_RGB,
             transform=None,
         )
         val_subset = SegmentationDataset(
             data_dir= VALIDATION_SET_DIR,
             processor=processor,
             num_layers=NUM_LAYERS,
-            is_rgb=IS_RGB,
             transform=None,
         )
     else:
@@ -410,7 +406,7 @@ def training(args):
             std  = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(3,1,1)
             image = (image - mean) / std
 
-            image = torch.permute(image[torch.newaxis, ...], (0, 1, 2, 3)) if IS_TRAINED=="segmenter" else torch.permute(image[torch.newaxis, ...], (0, 2, 3, 1))
+            image = torch.permute(image[torch.newaxis, ...], (0, 1, 2, 3))# if IS_TRAINED=="segmenter" else torch.permute(image[torch.newaxis, ...], (0, 2, 3, 1))
             outputs = model(image)
             if not isinstance(model, SegformerForSemanticSegmentation):
                 outputs = outputs[0]
@@ -427,8 +423,8 @@ def training(args):
             )[0,1,...].detach().cpu().numpy()
 
             # saving images
-            Image.fromarray(proba).save(os.path.join(src_best_preds_probas, tile_name))
-            Image.fromarray(preds_rgb).save(os.path.join(src_best_preds_img, tile_name))
+            # Image.fromarray(proba).save(os.path.join(src_best_preds_probas, tile_name))
+            # Image.fromarray(preds_rgb).save(os.path.join(src_best_preds_img, tile_name))
             tiff.imwrite(os.path.join(src_best_preds_bin, tile_name), preds, compression="zstd", compressionargs={"level": 9})
             shutil.copyfile(src_img, os.path.join(src_best_preds_originals, tile_name))
             shutil.copyfile(src_labels, os.path.join(src_best_preds_labels, tile_name))

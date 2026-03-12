@@ -3,6 +3,16 @@ import torch
 
 
 def compute_iou(preds, labels, num_classes):
+    """
+    Compute per-class Intersection over Union (IoU) and mean IoU for segmentation predictions.
+    Parameters: 
+        preds (np.ndarray) - predicted class indices with shape (N, H, W); 
+        labels (np.ndarray) - ground-truth class indices with shape (N, H, W); 
+        num_classes (int) - number of segmentation classes.
+    Returns: 
+        dict - dictionary containing mean IoU and IoU for each class.
+    """
+
     ious = []
 
     for cls in range(num_classes):
@@ -26,9 +36,13 @@ def compute_iou(preds, labels, num_classes):
 
 def compute_mean_dice(pred, label, num_classes):
     """
-    pred: (N, H, W) predicted class indices
-    label: (N, H, W) ground-truth class indices
-    num_classes: int
+    Compute the mean Dice coefficient across segmentation classes.
+    Parameters: 
+        pred (np.ndarray | torch.Tensor) - predicted class indices with shape (N, H, W); 
+        label (np.ndarray | torch.Tensor) - ground-truth class indices with shape (N, H, W); 
+        num_classes (int) - number of segmentation classes.
+    Returns: 
+        float - mean Dice coefficient across classes.
     """
 
     # Move to cpu + numpy
@@ -62,8 +76,12 @@ def compute_mean_dice(pred, label, num_classes):
 
 def compute_pixel_accuracy(pred, label):
     """
-    pred: (N, H, W) predicted class indices
-    label: (N, H, W) ground-truth class indices
+    Compute pixel-wise accuracy between predicted and ground-truth segmentation masks.
+    Parameters: 
+        pred (np.ndarray | torch.Tensor) - predicted class indices with shape (N, H, W); 
+        label (np.ndarray | torch.Tensor) - ground-truth class indices with shape (N, H, W).
+    Returns: 
+        float - pixel accuracy value.
     """
 
     if isinstance(pred, torch.Tensor):
@@ -78,51 +96,53 @@ def compute_pixel_accuracy(pred, label):
 
 
 def compute_metrics(p):
-        """
-        Compute per-class IoU and mean IoU for semantic segmentation predictions.
+    """
+    Compute segmentation evaluation metrics including IoU, Dice score, and pixel accuracy.
+    Parameters: 
+        p (dict | EvalPrediction) - object containing predictions logits and ground-truth labels.
+    Returns: 
+        dict - dictionary containing mean IoU, per-class IoU, pixel accuracy, and mean Dice score.
+    """
 
-        p.predictions: (batch_size, num_classes, H_pred, W_pred)
-        p.label_ids:   (batch_size, H_lbl, W_lbl)
-        """
-        if isinstance(p, dict):
-            preds = p['predictions']  # raw logits
-            labels = p['label_ids']   # ground-truth labels
-        else:
-            preds = p.predictions  # raw logits
-            labels = p.label_ids   # ground-truth labels
+    if isinstance(p, dict):
+        preds = p['predictions']  # raw logits
+        labels = p['label_ids']   # ground-truth labels
+    else:
+        preds = p.predictions  # raw logits
+        labels = p.label_ids   # ground-truth labels
 
-        # Resize predictions to match label size
-        logits = torch.nn.functional.interpolate(
-            torch.tensor(preds),
-            size=labels.shape[-2:],   # (H_lbl, W_lbl)
-            mode="bilinear",
-            align_corners=False
-        )
+    # Resize predictions to match label size
+    if not isinstance(preds, torch.Tensor):
+        preds = torch.tensor(preds)
+    logits = torch.nn.functional.interpolate(
+        preds,
+        size=labels.shape[-2:],   # (H_lbl, W_lbl)
+        mode="bilinear",
+        align_corners=False
+    )
 
-        # Final predicted class mask
-        pred = logits.argmax(dim=1).cpu().numpy()  # (batch_size, H_lbl, W_lbl)
+    # Final predicted class mask
+    pred = logits.argmax(dim=1).cpu().numpy()  # (batch_size, H_lbl, W_lbl)
 
-        # compute ious
-        metrics = compute_iou(pred, labels, num_classes=preds.shape[1])
-        metrics['pa'] = compute_pixel_accuracy(pred, labels)
-        metrics['mean_dice'] = compute_mean_dice(pred, labels, preds.shape[1])
+    # compute ious
+    metrics = compute_iou(pred, labels, num_classes=preds.shape[1])
+    metrics['pa'] = compute_pixel_accuracy(pred, labels)
+    metrics['mean_dice'] = compute_mean_dice(pred, labels, preds.shape[1])
 
-        return metrics
+    return metrics
 
 
 def confusion_matrix_numpy(y_true, y_pred, num_classes):
     """
-    Computes a confusion matrix for segmentation (H×W arrays).
-
-    y_true : ndarray of shape (H, W)
-    y_pred : ndarray of shape (H, W)
-    num_classes : int, number of classes
-
-    Returns: ndarray (num_classes, num_classes)
+    Compute a confusion matrix for segmentation predictions using NumPy.
+    Parameters: 
+        y_true (np.ndarray) - ground-truth class indices with shape (H, W); 
+        y_pred (np.ndarray) - predicted class indices with shape (H, W); 
+        num_classes (int) - number of segmentation classes.
+    Returns: 
+        np.ndarray - confusion matrix with shape (num_classes, num_classes).
     """
-    # mask = (y_true >= 0) & (y_true < num_classes)  # valid pixels only
-    # y_true = y_true[mask].flatten()
-    # y_pred = y_pred[mask].flatten()
+
     y_true = y_true.flatten()
     y_pred = y_pred.flatten()
 
@@ -135,6 +155,15 @@ def confusion_matrix_numpy(y_true, y_pred, num_classes):
 
 
 def compute_cm_from_dict(dict_preds_lbls, num_classes=2):
+    """
+    Compute a global confusion matrix from a dictionary of prediction and label pairs.
+    Parameters: 
+        dict_preds_lbls (dict) - dictionary mapping sample identifiers to tuples of (predictions, labels); 
+        num_classes (int) - number of segmentation classes.
+    Returns: 
+        np.ndarray - aggregated confusion matrix with shape (num_classes, num_classes).
+    """
+
     cf = np.zeros((len(dict_preds_lbls), num_classes, num_classes), dtype=np.uint64)
 
     for id_val, (preds, labels) in enumerate(dict_preds_lbls.values()):

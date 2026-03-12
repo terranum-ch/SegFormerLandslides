@@ -39,29 +39,26 @@ def multi_training(trainings, args):
 if __name__ == "__main__":
     trainings = [
         {
-            'train.output_suffixe': 'playground_lbl_smoothing_0.001',
-            'train.label_smoothing': 0.001,
+            'train.output_suffixe': 'playground',
+            'train.is_trained': 'fusion',
+            'dataset.fusion.dataset_dir': 'data/dataset_fusion_playground',
+            'train.num_epochs': 30,
+            'train.batch_size': 8,
+            'train.num_workers': 4,
+            'train.label_smoothing': 0.0,
         },
         {
-            'train.output_suffixe': 'playground_lbl_smoothing_0.01',
+            'train.output_suffixe': 'landslides_lbl_smoothing_0.01',
+            'train.is_trained': 'segmenter',
+            'dataset.segmenter.dataset_dir': 'data/dataset_segmentation_landslide',
+            'train.label_smoothing': 0.01,
         },
         {
             'train.output_suffixe': 'playground_lbl_smoothing_0.1',
+            'train.is_trained': 'segmenter',
+            'dataset.segmenter.dataset_dir': 'data/dataset_segmentation_landslide',
             'train.label_smoothing': 0.1,
         },
-        {
-            'train.output_suffixe': 'landslide_lbl_smoothing_0.01',
-            'dataset.segmenter.dataset_dir': "data/dataset_segmentation_landslide",
-            'train.loss_weights': 'auto',
-        },
-        {
-            'train.output_suffixe': 'playground_fusion_false_pos_lbl_smoothing_0.01',
-            'train.is_trained': 'fusion',
-            'train.num_epochs': 20,
-            'train.batch_size': 16,
-            'train.num_workers': 8,
-        },
-
     ]
 
     args = OmegaConf.load('./config/training.yaml')

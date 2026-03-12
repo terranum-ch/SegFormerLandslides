@@ -5,9 +5,17 @@ from PIL import Image
 import rasterio
 import cv2
 import torch
-import pickle
 
 def resize_to_512(img, is_mask=False):
+    """
+    Resize an image or mask to 512×512 while preserving channel structure.
+    Parameters: 
+        img (np.ndarray) - input image array with shape (C, H, W) or mask array with shape (H, W); 
+        is_mask (bool) - whether the input is a segmentation mask (uses nearest-neighbor interpolation).
+    Returns: 
+        np.ndarray - resized image or mask with spatial dimensions (512, 512).
+    """
+
     interp = cv2.INTER_NEAREST if is_mask else cv2.INTER_LINEAR
 
     if img.ndim == 3:  # (C, H, W)
@@ -23,9 +31,14 @@ def resize_to_512(img, is_mask=False):
 
 def center_crop(img, crop_size):
     """
-    img: (C, H, W) or (H, W)
-    crop_size: int
+    Extract a centered square crop from an image or mask.
+    Parameters: 
+        img (np.ndarray) - input image array with shape (C, H, W) or mask array with shape (H, W); 
+        crop_size (int) - size of the square crop.
+    Returns: 
+        np.ndarray - cropped image or mask with spatial dimensions (crop_size, crop_size).
     """
+
     if img.ndim == 3:
         _, H, W = img.shape
     else:
@@ -45,13 +58,13 @@ def center_crop(img, crop_size):
 
 def get_multiscale_patch(img_2048, mask_2048=None, scale=1.0):
     """
-    img_2048 : (C, 2048, 2048)
-    mask_2048: (2048, 2048)
-    scale : int  (1, 2, 4)
-
-    Returns
-    -------
-    img_512, mask_512
+    Extract a centered multi-scale patch and resize it to 512×512 resolution.
+    Parameters: 
+        img_2048 (np.ndarray) - input image array with shape (C, 2048, 2048); 
+        mask_2048 (np.ndarray | None) - optional segmentation mask with shape (2048, 2048); 
+        scale (float) - scaling factor controlling crop size before resizing.
+    Returns: 
+        tuple[np.ndarray, np.ndarray | None] - resized image patch and corresponding mask patch.
     """
 
     base = 512
@@ -67,6 +80,71 @@ def get_multiscale_patch(img_2048, mask_2048=None, scale=1.0):
 
     return img_512, mask_512
 
+
+class SegmentationDataset(Dataset):
+    """
+    PyTorch dataset for loading segmentation images and masks with optional preprocessing and augmentation.
+    Parameters: 
+        data_dir (str) - root directory containing image and mask folders; 
+        processor (callable | None) - HuggingFace processor used to prepare model inputs; 
+        num_layers (int) - number of image channels to load; 
+        is_rgb (bool) - whether the images correspond to standard RGB inputs; 
+        transform (callable | None) - optional augmentation transform applied to images and masks.
+    Returns: 
+        Dataset - dataset object providing image tensors, segmentation labels, and filenames.
+    """
+
+    def __init__(self, data_dir, processor, num_layers=3, transform=None):
+        self.data_dir = data_dir
+        self.processor = processor
+        self.num_layers = num_layers
+        self.transform = transform
+
+        self.images = []
+        self.masks = []
+        for dataset in [r for r,_,_ in os.walk(data_dir) if os.path.basename(r) in ["images", "masks"]]:
+            if os.path.basename(dataset) == 'images':
+                self.images.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+            else:
+                self.masks.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
+
+        self.images = [x for row in self.images for x in row]
+        self.masks = [x for row in self.masks for x in row]
+
+        assert len(self.images) == len(self.masks), "Image/mask count mismatch"
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image = rasterio.open(self.images[idx]).read()[:self.num_layers, ...]
+        mask = rasterio.open(self.masks[idx]).read().squeeze(0)
+
+        # Apply augmentation
+        if self.transform is not None:
+            augmented = self.transform(image=np.moveaxis(image, 0, 2), mask=mask)
+            image = np.moveaxis(augmented["image"], 2, 0)
+            mask = augmented["mask"]
+
+        if self.processor is not None:
+            inputs = self.processor(images=image, segmentation_maps=mask.squeeze(-1), return_tensors="pt")
+            inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)  # HF returns tensors with extra batch dim, we remove manually
+            inputs["labels"] = inputs["labels"].squeeze(0)              # HF returns tensors with extra batch dim, we remove manually
+            inputs['filename'] = self.images[idx]
+        else:
+            imgs = image.astype(np.float32) / 255
+            imgs = (imgs - np.mean(imgs, axis=(0,1))) / np.std(imgs)
+            inputs = {
+                "pixel_values": torch.from_numpy(imgs).float(),
+                'labels': torch.from_numpy(mask).long(),
+                'filename': self.images[idx]
+            }
+            
+        return inputs
+    
+    def get_images(self):
+        return self.images
+    
 
 # class SegFusionDataset(Dataset):
 #     def __init__(self, image_dir, mask_dir, scales, transform=None):
@@ -122,175 +200,113 @@ def get_multiscale_patch(img_2048, mask_2048=None, scale=1.0):
 #         return inputs
 
 
-class SegFusionDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, scales, transform=None):
-        self.logits_dir = os.path.join(os.path.dirname(image_dir), 'segpredict')
-        self.image_dir = image_dir
-        self.mask_dir = mask_dir
-        self.scales = scales
-        self.transform = transform
+# class SegFusionDataset(Dataset):
+#     def __init__(self, image_dir, mask_dir, scales, transform=None):
+#         self.logits_dir = os.path.join(os.path.dirname(image_dir), 'segpredict')
+#         self.image_dir = image_dir
+#         self.mask_dir = mask_dir
+#         self.scales = scales
+#         self.transform = transform
 
-        self.images = sorted(os.listdir(image_dir))
-        self.logits = sorted(os.listdir(self.logits_dir))
-        self.masks  = sorted(os.listdir(mask_dir))
+#         self.images = sorted(os.listdir(image_dir))
+#         self.logits = sorted(os.listdir(self.logits_dir))
+#         self.masks  = sorted(os.listdir(mask_dir))
 
-        assert len(self.images) == len(self.masks), "Image/mask count mismatch"
-        assert os.path.exists(self.logits_dir)
+#         assert len(self.images) == len(self.masks), "Image/mask count mismatch"
+#         assert os.path.exists(self.logits_dir)
 
-    def __len__(self):
-        return len(self.images)
+#     def __len__(self):
+#         return len(self.images)
 
-    def __getitem__(self, idx):
-        logits_path = os.path.join(self.image_dir, self.logits[idx])
-        # img_path = os.path.join(self.image_dir, self.images[idx])
-        mask_path = os.path.join(self.mask_dir, self.masks[idx])
+#     def __getitem__(self, idx):
+#         logits_path = os.path.join(self.image_dir, self.logits[idx])
+#         # img_path = os.path.join(self.image_dir, self.images[idx])
+#         mask_path = os.path.join(self.mask_dir, self.masks[idx])
 
-        # image = np.array(Image.open(img_path).convert("RGB"))
-        with open(logits_path, 'rb') as f:
-            logits = pickle.load(f)
-        mask = rasterio.open(mask_path).read().astype("int64")
-        # mask = np.array(Image.open(mask_path)).astype("int64")
+#         # image = np.array(Image.open(img_path).convert("RGB"))
+#         with open(logits_path, 'rb') as f:
+#             logits = pickle.load(f)
+#         mask = rasterio.open(mask_path).read().astype("int64")
+#         # mask = np.array(Image.open(mask_path)).astype("int64")
 
-        # Apply augmentation
-        if self.transform is not None:
-            augmented = self.transform(image=logits, mask=mask)
-            # image = augmented["image"]
-            logits = augmented['image']
-            mask = augmented["mask"]
+#         # Apply augmentation
+#         if self.transform is not None:
+#             augmented = self.transform(image=logits, mask=mask)
+#             # image = augmented["image"]
+#             logits = augmented['image']
+#             mask = augmented["mask"]
 
-        inputs = {
-            "logits": logits,
-            'labels': torch.from_numpy(mask).long(),
-            'filename': self.images[idx]
-        }
+#         inputs = {
+#             "logits": logits,
+#             'labels': torch.from_numpy(mask).long(),
+#             'filename': self.images[idx]
+#         }
 
-        return inputs
-        imgs = []
+#         return inputs
+#         imgs = []
 
-        for s in self.scales:
-            img_s, _ = get_multiscale_patch(np.moveaxis(image, 2, 0), mask, s)
-            imgs.append(np.moveaxis(img_s, 0, 2))
+#         for s in self.scales:
+#             img_s, _ = get_multiscale_patch(np.moveaxis(image, 2, 0), mask, s)
+#             imgs.append(np.moveaxis(img_s, 0, 2))
 
-        # stack for model
-        imgs = np.stack(imgs)      # (K, C, 512, 512)
-        mask = center_crop(mask, 512)
+#         # stack for model
+#         imgs = np.stack(imgs)      # (K, C, 512, 512)
+#         mask = center_crop(mask, 512)
 
-        # normalize imgs:
-        imgs = imgs.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])[None, None, None, :]
-        std  = np.array([0.229, 0.224, 0.225])[None, None, None, :]
-        imgs = (imgs - mean) / std
+#         # normalize imgs:
+#         imgs = imgs.astype(np.float32) / 255.0
+#         mean = np.array([0.485, 0.456, 0.406])[None, None, None, :]
+#         std  = np.array([0.229, 0.224, 0.225])[None, None, None, :]
+#         imgs = (imgs - mean) / std
 
-        # HF returns tensors with extra batch dim, we remove manually
-        inputs = {
-            "multspec_img": torch.from_numpy(imgs).float(),
-            'labels': torch.from_numpy(mask).long(),
-            'filename': self.images[idx]
-        }
+#         # HF returns tensors with extra batch dim, we remove manually
+#         inputs = {
+#             "multspec_img": torch.from_numpy(imgs).float(),
+#             'labels': torch.from_numpy(mask).long(),
+#             'filename': self.images[idx]
+#         }
 
-        return inputs
+#         return inputs
 
-    def get_images(self):
-        return self.images
+#     def get_images(self):
+#         return self.images
 
 
-class SegmentationDataset(Dataset):
-    def __init__(self, data_dir, processor, num_layers=3, is_rgb=True, transform=None):
-        self.data_dir = data_dir
-        self.processor = processor
-        self.num_layers = num_layers
-        self.is_rgb = is_rgb
-        self.transform = transform
 
-        self.images = []
-        self.masks = []
-        for dataset in [r for r,_,_ in os.walk(data_dir) if os.path.basename(r) in ["images", "masks"]]:
-            if os.path.basename(dataset) == 'images':
-                self.images.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
-            else:
-                self.masks.append([os.path.join(dataset, x) for x in os.listdir(dataset)])
-
-        self.images = [x for row in self.images for x in row]
-        self.masks = [x for row in self.masks for x in row]
-
-        assert len(self.images) == len(self.masks), "Image/mask count mismatch"
-        if is_rgb:
-            assert num_layers == 3
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        image = np.moveaxis(rasterio.open(self.images[idx]).read(), 0, 2)[..., :self.num_layers]
-        mask = np.moveaxis(rasterio.open(self.masks[idx]).read(), 0, 2)
-
-        # Apply augmentation
-        if self.transform is not None:
-            augmented = self.transform(image=image, mask=mask)
-            image = augmented["image"]
-            mask = augmented["mask"]
-
-        if self.processor is not None:
-            inputs = self.processor(images=image, segmentation_maps=mask.squeeze(-1), return_tensors="pt")
-            inputs["pixel_values"] = inputs["pixel_values"].squeeze(0)  # HF returns tensors with extra batch dim, we remove manually
-            inputs["labels"] = inputs["labels"].squeeze(0)              # HF returns tensors with extra batch dim, we remove manually
-            inputs['filename'] = self.images[idx]
-        else:
-            imgs = image.astype(np.float32) / 255.0
-            if self.is_rgb:
-                mean = np.array([0.485, 0.456, 0.406])[None, None, :]
-                std  = np.array([0.229, 0.224, 0.225])[None, None, :]
-                imgs = (imgs - mean) / std
-            else:
-                imgs = (imgs - self.means[None, None, :]) / self.stds[None, None, :]
-                
-            inputs = {
-                "pixel_values": torch.from_numpy(imgs).float(),
-                'labels': torch.from_numpy(mask).squeeze(-1).long(),
-                'filename': self.images[idx]
-            }
-            
-
-        return inputs
-    
-    def get_images(self):
-        return self.images
-    
-
-class DatasetProxy:
-    def __init__(
-        self,
-        mode,  # "segmenter" or "fusion"
-        image_dir,
-        mask_dir,
-        processor,
-        transform=None,
-        scales=(1.0, 0.75, 0.5, 0.25),
-    ):
-        self.mode = mode
-        mode = 'segmenter'
-        if mode == "fusion":
-            self.dataset = SegFusionDataset(
-                image_dir=image_dir,
-                mask_dir=mask_dir,
-                transform=transform,
-                scales=scales,
-            )
-        else:
-            self.dataset = SegmentationDataset(
-                image_dir=image_dir,
-                mask_dir=mask_dir,
-                processor=processor,
-                transform=transform,
-            )
+# class DatasetProxy:
+#     def __init__(
+#         self,
+#         mode,  # "segmenter" or "fusion"
+#         image_dir,
+#         mask_dir,
+#         processor,
+#         transform=None,
+#         scales=(1.0, 0.75, 0.5, 0.25),
+#     ):
+#         self.mode = mode
+#         mode = 'segmenter'
+#         if mode == "fusion":
+#             self.dataset = SegFusionDataset(
+#                 image_dir=image_dir,
+#                 mask_dir=mask_dir,
+#                 transform=transform,
+#                 scales=scales,
+#             )
+#         else:
+#             self.dataset = SegmentationDataset(
+#                 image_dir=image_dir,
+#                 mask_dir=mask_dir,
+#                 processor=processor,
+#                 transform=transform,
+#             )
         
-        self.images = self.dataset.get_images()
+#         self.images = self.dataset.get_images()
 
-    def __len__(self):
-        return len(self.dataset)
+#     def __len__(self):
+#         return len(self.dataset)
 
-    def __getitem__(self, idx):
-        return self.dataset[idx]
+#     def __getitem__(self, idx):
+#         return self.dataset[idx]
     
 
 if __name__ == "__main__":

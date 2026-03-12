@@ -1,8 +1,9 @@
 preprocessing:
   dataset_type: fusion # chosse between 'segmenter', 'fusion' and 'both'
-  tiles_location: E:\Terranum_FATTY\Playgrounds\4100_tiles\dataset_1
+  # tiles_location: E:\Terranum_FATTY\Playgrounds\4100_tiles\dataset_1
+  tiles_location: D:\Terranum_SD\99_Data\Landslide\data\Bern_glissements_spontane_shpfiles\4100_samples
   results_location: data/preprocessing
-  suffixe: playground_tiles
+  suffixe: landslides_tiles
   segmenter:
     base_squares: [256, 512, 768, 1024]
     scales: [1.0, 0.75, 0.5, 0.25]

@@ -1,11 +1,19 @@
 import os
 import numpy as np
-import shutil
 import torch
 from transformers import TrainerCallback
 
 
 class MetricsCallback(TrainerCallback):
+    """
+    HuggingFace Trainer callback used to aggregate and log training metrics at the end of each epoch.
+    Parameters: 
+        trainer (Trainer) - reference to the trainer instance storing batch-level training metrics; 
+        cf_dir (str) - directory where confusion matrices or related evaluation artifacts may be stored.
+    Returns: 
+        TrainerCallback - callback that computes epoch-level training metrics and logs them to the trainer state.
+    """
+
     def __init__(self, trainer, cf_dir):
         self.trainer = trainer   # keep a reference
 
@@ -31,6 +39,15 @@ class MetricsCallback(TrainerCallback):
 
 
 class SavesCurrentStateCallback(TrainerCallback):
+    """
+    HuggingFace Trainer callback used to save the latest training state after each epoch.
+    Parameters: 
+        last_checkpoint_dir (str) - directory where the latest checkpoint state will be saved; 
+        trainer (Trainer) - reference to the trainer instance whose state will be stored.
+    Returns: 
+        TrainerCallback - callback that saves the model, optimizer, scheduler, scaler, and trainer state.
+    """
+
     def __init__(self, last_checkpoint_dir, trainer):
         self.trainer = trainer
         self.checkpoint_dir = last_checkpoint_dir
@@ -45,6 +62,4 @@ class SavesCurrentStateCallback(TrainerCallback):
         torch.save(self.trainer.optimizer.state_dict(), os.path.join(self.checkpoint_dir, "optimizer.pt"))
         torch.save(self.trainer.accelerator.scaler.state_dict(), os.path.join(self.checkpoint_dir, "scaler.pt"))
         torch.save(self.trainer.lr_scheduler.state_dict(), os.path.join(self.checkpoint_dir, "scheduler.pt"))
-    
-    # def on_epoch_end(self, args, state, control, **kwargs):
-    #     return super().on_epoch_end(args, state, control, **kwargs)
+

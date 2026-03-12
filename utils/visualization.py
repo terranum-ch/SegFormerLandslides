@@ -6,6 +6,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 def show_loss_pa(history, saving_loc, do_show=False, do_save=True):
+    """
+    Plot training and validation loss and pixel accuracy curves from training history.
+    Parameters: 
+        history (list[dict]) - training log history containing recorded metrics per step or epoch; 
+        saving_loc (str) - file path where the generated plot will be saved; 
+        do_show (bool) - whether to display the plot interactively; 
+        do_save (bool) - whether to save the plot to disk.
+    Returns: 
+        None - generates and optionally saves a matplotlib figure.
+    """
+    
     # Lists to fill
     train_loss = []
     train_pa = []
@@ -61,6 +72,17 @@ def show_loss_pa(history, saving_loc, do_show=False, do_save=True):
 
 
 def show_mean_iou_dice(history, saving_loc, do_show=False, do_save=True):
+    """
+    Plot training and validation mean IoU and mean Dice curves from training history.
+    Parameters: 
+        history (list[dict]) - training log history containing recorded metrics per step or epoch; 
+        saving_loc (str) - file path where the generated plot will be saved; 
+        do_show (bool) - whether to display the plot interactively; 
+        do_save (bool) - whether to save the plot to disk.
+    Returns: 
+        None - generates and optionally saves a matplotlib figure.
+    """
+
     # Lists to fill
     train_mdice = []
     train_miou = []
@@ -117,6 +139,17 @@ def show_mean_iou_dice(history, saving_loc, do_show=False, do_save=True):
     
 
 def show_iou_per_class(history, saving_loc, do_show=False, do_save=True):
+    """
+    Plot per-class IoU evolution across epochs for both training and validation sets.
+    Parameters: 
+        history (list[dict]) - training log history containing per-class IoU metrics; 
+        saving_loc (str) - file path where the generated plot will be saved; 
+        do_show (bool) - whether to display the plot interactively; 
+        do_save (bool) - whether to save the plot to disk.
+    Returns: 
+        None - generates and optionally saves a matplotlib figure.
+    """
+
     # Per-class IoU (dynamic)
     val_per_class_iou = {}  # {class_id: [iou_epoch1, iou_epoch2, ...]}
     train_per_class_iou = {}  # {class_id: [iou_epoch1, iou_epoch2, ...]}
@@ -169,15 +202,16 @@ def show_iou_per_class(history, saving_loc, do_show=False, do_save=True):
 
 def show_confusion_matrix(saving_loc, conf_mat, class_labels, title="Confusion Matrix", do_show=False, do_save=True):
     """
-        plots the confusion matrix as and image
-        :param saving_loc : location of saved image
-        :param y_true: list of the GT label of the models
-        :param y_pred: List of the predicted label of the models
-        :param class_labels: List of strings containing the label tags
-        :param epoch: number of the epoch of training which provided the results
-        :param do_save: saves the image
-        :param do_show: shows the image
-        :return: None (just plots)
+    Plot a confusion matrix heatmap and optionally save the visualization.
+    Parameters: 
+        saving_loc (str) - file path where the generated plot will be saved; 
+        conf_mat (np.ndarray) - confusion matrix array with shape (n_classes, n_classes); 
+        class_labels (list[str]) - list of class names corresponding to matrix indices; 
+        title (str) - title displayed above the confusion matrix plot; 
+        do_show (bool) - whether to display the plot interactively; 
+        do_save (bool) - whether to save the plot to disk.
+    Returns: 
+        None - generates and optionally saves a matplotlib figure.
     """
     
     df_conf_mat = pd.DataFrame(conf_mat, index=class_labels, columns=class_labels)

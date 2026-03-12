@@ -261,7 +261,7 @@ def predict_batch_array_fusion(
 
     with torch.no_grad():
         output = model(
-            pixel_values=batch,
+            pixel_values=torch.moveaxis(batch, 3, 1),
             return_weights=do_keep_weights,
             )
 
@@ -395,7 +395,9 @@ def predict_with_batch_fusion(
                 prob_acc[y2:y3, x2:x3] += probs[i, 1, ...].reshape((tile_size, tile_size))[y0_log:y1_log, x0_log:x1_log]
                 if do_keep_weights:
                     weight_acc[y2:y3, x2:x3] += 1
-                    weights_fusion_acc[:, y2:y3, x2:x3] += weights[i, :].reshape((4, tile_size, tile_size)).cpu()[:, y0_log:y1_log, x0_log:x1_log]
+                    new_weights = weights[i,:,1,...].cpu() * np.ones([4,y1_log - y0_log, x1_log - x0_log])
+                    # weights_fusion_acc[:, y2:y3, x2:x3] += weights[i, :].reshape((4, tile_size, tile_size)).cpu()[:, y0_log:y1_log, x0_log:x1_log]
+                    weights_fusion_acc[:, y2:y3, x2:x3] += new_weights
 
             initial_poses = []
 

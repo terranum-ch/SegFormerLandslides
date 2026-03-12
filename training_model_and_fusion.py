@@ -18,6 +18,7 @@ def train_both(conf):
     conf.train.batch_size = conf.fusion.segmenter.batch_size
     conf.train.num_workers = conf.fusion.segmenter.num_workers
     conf.train.is_trained = 'segmenter'
+    conf.dataset.segmenter.dataset_dir = conf.fusion.segmenter.dataset
     segmenter_model_dir = training(conf)
 
     # training fusion modulus
@@ -29,6 +30,7 @@ def train_both(conf):
     conf.train.batch_size = conf.fusion.fusion.batch_size
     conf.train.num_workers = conf.fusion.fusion.num_workers
     conf.train.is_trained = 'fusion'
+    conf.dataset.fusion.dataset_dir = conf.fusion.fusion.dataset
     conf.train.pretrained_model = segmenter_model_dir
     training(conf)
 
@@ -50,5 +52,7 @@ if __name__ == "__main__":
         conf_train = OmegaConf.load('./config/training.yaml')
 
         args= OmegaConf.merge({"fusion": conf_fusion, "train":conf_train.train, "dataset":conf_train.dataset})
+
+        # args = OmegaConf.load('./config/training_fusion.yaml')
 
     train_both(args)
